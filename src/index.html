@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Skyblock Tracker</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside id="side"></aside>
+<div class="col">
+  <header data-tauri-drag-region>
+    <label class="search">
+      <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
+      <input id="q" type="search" autocomplete="off" aria-label="Search" placeholder="Search…">
+      <kbd>Ctrl K</kbd>
+    </label>
+    <span class="grow" data-tauri-drag-region></span>
+    <div class="winbtns">
+      <button type="button" data-win="min" aria-label="Minimize"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+      <button type="button" data-win="max" aria-label="Maximize"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="14" rx="2"/></svg></button>
+      <button type="button" data-win="close" aria-label="Close"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+  </header>
+  <main id="view"></main>
+</div>
+<div id="modal" hidden></div>
+<script src="logic.js"></script>
+<script src="forge.js"></script>
+<script src="items.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
