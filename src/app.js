@@ -24,6 +24,7 @@ const dur = (ms) => { const m = Math.max(1, Math.ceil(ms / 6e4)); const d = Math
 /* ---------- icons ---------- */
 const ic = (d, s = 18, w = 1.8) => `<svg aria-hidden="true" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const P = {
+  dice: '<rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1" fill="currentColor"/><circle cx="15" cy="15" r="1.1" fill="currentColor"/><circle cx="12" cy="12" r="1.1" fill="currentColor"/>',
   download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
   all: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>',
   mayor: '<path d="M3 8l4.5 3.5L12 5l4.5 6.5L21 8l-2 11H5z"/>',
@@ -79,6 +80,7 @@ const CAT_ICONS = ['other', 'mayor', 'skins', 'lowball', 'gem', 'star', 'sword',
 const coin = (s = 18) => `<svg aria-hidden="true" width="${s}" height="${s}" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#f5c542"/><circle cx="8" cy="8" r="4.4" fill="none" stroke="#c48a12" stroke-width="1.4"/></svg>`;
 
 const PASSIVE = { label: 'Passive', ink: '#93c5fd', tint: 'rgba(96,165,250,.16)' };
+const DICE_LOOK = { label: 'Dice', ink: '#f87171', tint: 'rgba(248,113,113,.15)' };
 // [key, label, ink]; the tinted background is derived from the ink
 const COLORS = Object.fromEntries([
   ['violet', 'Violet', '#c4b5fd'], ['purple', 'Purple', '#d8b4fe'], ['fuchsia', 'Fuchsia', '#f0abfc'], ['pink', 'Pink', '#f9a8d4'],
@@ -96,7 +98,7 @@ let saveBlocked = false;
 let saving = Promise.resolve();
 const EMPTY = () => {
   const p = uid();
-  return { profiles: [{ id: p, name: 'Main' }], activeProfile: p, prefs: { period: 'all', from: '', to: '', catView: 'list', catMetric: 'invested', chart: { style: 'bars', group: 'day', sign: 'all', hidden: [] } }, categories: [], flips: [], timers: [], presets: [], calendars: [{ id: uid(), name: 'Events', color: 'violet', visible: true }], events: [], todos: [], passive: [] };
+  return { profiles: [{ id: p, name: 'Main' }], activeProfile: p, prefs: { period: 'all', from: '', to: '', catView: 'list', catMetric: 'invested', chart: { style: 'bars', group: 'day', sign: 'all', hidden: [] } }, categories: [], flips: [], timers: [], presets: [], calendars: [{ id: uid(), name: 'Events', color: 'violet', visible: true }], events: [], todos: [], passive: [], dice: [] };
 };
 // Old fixed categories, kept as ids so files from v1.0 still load.
 const LEGACY_CATS = { mayor: ['Mayor', 'gold'], skins: ['Skins', 'violet'], other: ['Other', 'teal'], lowball: ['Lowball', 'orange'] };
@@ -146,6 +148,7 @@ const derive = (f) => {
 };
 const myFlips = () => db.flips.filter((f) => f.profileId === db.activeProfile).map(derive);
 const myPassive = () => db.passive.filter((p) => p.profileId === db.activeProfile);
+const myDice = () => db.dice.filter((d) => d.profileId === db.activeProfile).map((d) => ({ ...d, ...L.diceResult(d) }));
 const profileName = (id) => byId(db.profiles, id)?.name || 'deleted profile';
 const catMeta = (id) => {
   const c = byId(db.categories, id);
@@ -200,6 +203,7 @@ function sideHtml() {
       ${ui.catsOpen ? `${db.categories.length ? `<div class="sub" aria-label="Categories. Drag to reorder, or Alt + Up/Down.">${db.categories.map((c) => `<div class="navrow" draggable="true" data-cat-id="${c.id}">${catBtn(c.id, esc(c.name), c.icon)}<button type="button" class="iconbtn" data-act="editCat" data-id="${c.id}" aria-label="Rename category ${esc(c.name)}">${ic(P.edit, 14)}</button></div>`).join('')}</div>` : ''}
         <button type="button" class="pnew createcat" data-act="newCat">${ic(P.plus, 15, 2)}Create category</button>` : ''}
     </div>
+    ${navBtn(ui.view === 'dice', P.dice, 'Dice', `<span class="count">${myDice().filter((d) => !d.end).length}</span>`, 'data-act="nav" data-view="dice"')}
     ${navBtn(ui.view === 'history', P.history, 'History', `<span class="count">${flips.filter((f) => f.sold).length}</span>`, 'data-act="nav" data-view="history"')}
     <div class="group">
       ${navBtn(ui.view === 'cal', P.cal, 'Calendar', `<span class="hint">${nToday} today</span>`, 'data-act="nav" data-view="cal"')}
@@ -529,7 +533,7 @@ function catChart(rows, view, metric) {
 function viewStats() {
   const pr = db.prefs, today = dayStart(new Date()), tomorrow = addDays(today, 1).getTime();
   const ms = (s) => new Date(s).getTime();
-  const flips = myFlips(), allPass = myPassive();
+  const flips = myFlips(), allPass = myPassive(), allDice = myDice();
   // period -> [from, to)
   let from, to = tomorrow;
   const preset = PERIODS.find((p) => p[0] === pr.period && p[2]);
@@ -537,14 +541,15 @@ function viewStats() {
   else if (pr.period === 'custom') {
     const a = new Date((pr.from || dKey(addDays(today, -29))) + 'T00:00').getTime(), b = addDays(new Date((pr.to || dKey(today)) + 'T00:00'), 1).getTime();
     [from, to] = a < b ? [a, b] : [b - 864e5, a + 864e5];
-  } else from = Math.min(today.getTime() - 13 * 864e5, ...flips.map((f) => ms(f.bought)), ...allPass.map((p) => ms(p.at)));
+  } else from = Math.min(today.getTime() - 13 * 864e5, ...flips.map((f) => ms(f.bought)), ...allPass.map((p) => ms(p.at)), ...allDice.map((d) => ms(d.bought)));
   const inR = (s) => { const t = ms(s); return t >= from && t < to; };
   const bought = flips.filter((f) => inR(f.bought));
   const closed = flips.filter((f) => f.sold && inR(f.soldAt));
   const pass = allPass.filter((p) => inR(p.at));
+  const diceDone = allDice.filter((d) => d.end && inR(d.end.at)), diceRes = sum(diceDone, (d) => d.pnl);
   const wins = closed.filter((f) => f.pnl > 0), losses = closed.filter((f) => f.pnl < 0);
   const profit = sum(wins, (f) => f.pnl), loss = sum(losses, (f) => f.pnl), passive = sum(pass, (p) => p.amount);
-  const net = profit + loss + passive;
+  const net = profit + loss + passive + diceRes;
   const closedCost = sum(closed, (f) => f.cost);
   const roi = closedCost ? ((profit + loss) / closedCost) * 100 : 0;
   const open = flips.filter((f) => !f.sold);
@@ -554,9 +559,10 @@ function viewStats() {
 
   // realized chart: closed flips by category + passive, with the chart filters
   const c = pr.chart, hidden = new Set(c.hidden);
-  const keys = db.categories.map((x) => [x.id, catMeta(x.id)]).concat([['passive', PASSIVE]]);
+  const keys = db.categories.map((x) => [x.id, catMeta(x.id)]).concat([['passive', PASSIVE], ['dice', DICE_LOOK]]);
   const evs = flips.filter((f) => f.sold).map((f) => ({ t: ms(f.soldAt), key: f.cat, v: f.pnl }))
     .concat(allPass.map((p) => ({ t: ms(p.at), key: 'passive', v: p.amount })))
+    .concat(allDice.filter((d) => d.end).map((d) => ({ t: ms(d.end.at), key: 'dice', v: d.pnl })))
     .filter((e) => !hidden.has(e.key) && (c.sign === 'all' || (c.sign === 'gain' ? e.v > 0 : e.v < 0)));
   const bks = L.buckets(evs, from, to, c.group);
   const seg = (k, opts) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button type="button" aria-pressed="${c[k] === v}" data-act="chartSet" data-k="${k}" data-v="${v}">${l}</button>`).join('')}</div>`;
@@ -565,7 +571,7 @@ function viewStats() {
   const catData = db.categories.map(({ id }) => {
     const m = catMeta(id);
     return { label: m.label, ink: m.ink, inv: sum(bought.filter((f) => f.cat === id), (f) => f.cost), res: sum(closed.filter((f) => f.cat === id), (f) => f.pnl) };
-  }).concat([{ label: 'Passive', ink: PASSIVE.ink, inv: 0, res: sum(pass, (p) => p.amount) }]);
+  }).concat([{ label: 'Passive', ink: PASSIVE.ink, inv: 0, res: sum(pass, (p) => p.amount) }, { label: 'Dice', ink: DICE_LOOK.ink, inv: sum(diceDone, (d) => d.spent), res: diceRes }]);
   const chartTitle = { bars: 'Realized profit & loss', line: 'Realized profit & loss', cumul: 'Cumulative realized result', candle: 'Running total (candles)', stack: 'Realized result by category' }[c.style];
 
   // by category
@@ -585,6 +591,8 @@ function viewStats() {
       <div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:${PASSIVE.ink}"></span><span class="grow" style="font-weight:500">Passive ${ic(ui.passiveOpen ? '<path d="M6 15l6-6 6 6"/>' : '<path d="M6 9l6 6 6-6"/>', 14, 2)}</span><span class="num ${passive > 0 ? 'pos' : 'muted'}" style="font-weight:600">${signed(passive)}</span></div>
       <span class="small muted">${plural(pass.length, 'completion')} from passive tasks · click for details</span></button>
     ${ui.passiveOpen ? detail || '<span class="small muted" style="padding-left:16px">No passive income in this period.</span>' : ''}`;
+  const diceRow = `<div class="catrow"><div style="display:flex;align-items:center;gap:8px"><span class="dot" style="background:${DICE_LOOK.ink}"></span><span class="grow" style="font-weight:500">Dice</span><span class="num ${diceRes > 0 ? 'pos' : diceRes < 0 ? 'neg' : 'muted'}" style="font-weight:600">${signed(diceRes)}</span></div>
+      <span class="small muted">${diceDone.length} finished dice · ${fmt(sum(diceDone, (d) => d.spent))} spent</span></div>`;
 
   const top = wins.slice().sort((a, b) => b.pnl - a.pnl).slice(0, 5)
     .map((f, i) => `<tr><td>${i + 1}</td><td>${esc(f.name)}</td><td>${fmt(f.cost)}</td><td>${fmt(f.sell)}</td><td class="pos">${signed(f.pnl)}</td><td class="pos">${pct((f.pnl / f.cost) * 100)}</td></tr>`).join('');
@@ -603,7 +611,8 @@ function viewStats() {
     <div class="card"><span>Profit</span><div class="big pos">${signed(profit)}</div><span class="small muted">${plural(wins.length, 'winning flip')}</span></div>
     <div class="card"><span>Losses</span><div class="big neg">${signed(loss)}</div><span class="small muted">${plural(losses.length, 'losing flip')}</span></div>
     <div class="card"><span>Passive</span><div class="big" style="color:${PASSIVE.ink}">${signed(passive)}</div><span class="small muted">${plural(pass.length, 'completion')}</span></div>
-    <div class="card"><span>Net result</span><div class="big ${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${signed(net)}</div><span class="small muted">${closed.length ? 'ROI ' + pct(roi) + ' on closed' : 'flips + passive'}</span></div>
+    <div class="card"><span>Dice</span><div class="big ${diceRes > 0 ? 'pos' : diceRes < 0 ? 'neg' : ''}">${signed(diceRes)}</div><span class="small muted">${diceDone.length} finished</span></div>
+    <div class="card"><span>Net result</span><div class="big ${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${signed(net)}</div><span class="small muted">${closed.length ? 'ROI ' + pct(roi) + ' on closed' : 'flips + passive + dice'}</span></div>
     <div class="card"><span>Win rate</span><div class="big">${closed.length ? Math.round((wins.length / closed.length) * 100) + '%' : '—'}</div><span class="small muted">${wins.length} of ${closed.length} closed</span></div>
     <div class="card"><span>Still open</span><div class="big">${fmt(sum(open, (f) => f.cost))}</div><span class="small muted">${plural(open.length, 'flip')} in progress</span></div>
   </div>
@@ -614,7 +623,7 @@ function viewStats() {
       ${chartSvg(bks, c.style, c.group, keys, c.style === 'candle' ? L.candles(evs, bks, to) : null)}</section>
     <section class="panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><h2 class="grow">By category</h2>
         <div class="chartbar">${pseg('catView', [['list', 'List'], ['pie', 'Pie'], ['bars', 'Bars']])}${pr.catView === 'list' ? '' : pseg('catMetric', [['invested', 'Invested'], ['result', 'Result']])}</div></div>
-      ${pr.catView === 'list' ? catRows + passiveRow : catChart(catData, pr.catView, pr.catMetric)}</section>
+      ${pr.catView === 'list' ? catRows + passiveRow + diceRow : catChart(catData, pr.catView, pr.catMetric)}</section>
   </div>
   <div class="split">
     <section class="panel wide"><h2>Most profitable items</h2>${top ? `<table><thead><tr><th>#</th><th>Item</th><th>Bought</th><th>Sold</th><th>Profit</th><th>ROI</th></tr></thead><tbody>${top}</tbody></table>` : '<span class="small muted">No winning flips in this period.</span>'}</section>
@@ -819,6 +828,10 @@ function viewSettings() {
     <code style="padding:10px 12px;border-radius:10px;background:var(--field);border:1px solid var(--fieldline);user-select:text;word-break:break-all">${esc(dataPath)}</code>
     <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="button" class="btn ghost" data-act="openData" ${T ? '' : 'disabled'}>${ic(P.folder, 17)}Open data folder</button><button type="button" class="btn ghost" data-act="reloadData">Reload from file</button></div>
   </section>
+  <section class="panel"><h2>Selling</h2>
+    <span class="small muted">Used to calculate fees when you sell. AH fees are fixed by the game (BIN listing fee 1% / 2% / 2.5% + 1% claim tax).</span>
+    <label class="field"><span>Bazaar tax (%) <small>· 1.25% by default, lower with the Bazaar Flipper perk</small></span><input class="in" id="bztax" type="number" min="0" max="1.25" step="0.0125" value="${db.prefs.bzTax ?? 1.25}" style="max-width:160px"></label>
+  </section>
   <section class="panel"><h2>Updates</h2>
     <span class="small muted">Version ${esc(upd.version || '?')}. The app checks GitHub for a new version when it starts.</span>
     <div class="box"><div class="switchrow"><div class="grow"><label for="autoupd" style="font-weight:500">Install updates automatically</label><div class="small muted">On: a new version is installed and the app restarts by itself. Off: an Update button appears in the sidebar.</div></div><input type="checkbox" class="switch" id="autoupd" ${db.prefs.autoUpdate ? 'checked' : ''}></div></div>
@@ -826,9 +839,112 @@ function viewSettings() {
   </section>`;
 }
 
+/* ---------- dice ---------- */
+function viewDice() {
+  const all = myDice().sort((a, b) => (b.end?.at || b.bought).localeCompare(a.end?.at || a.bought));
+  const open = all.filter((d) => !d.end), done = all.filter((d) => d.end);
+  const net = sum(done, (d) => d.pnl), dyes = done.filter((d) => d.end.kind === 'dye').length;
+  const look = `background:${DICE_LOOK.tint};color:${DICE_LOOK.ink}`;
+  const row = (d) => {
+    const t = L.DICE[d.type];
+    const status = !d.end ? `<span class="small muted">Spent so far</span><b class="num neg">${signed(-d.spent)}</b>`
+      : `<span class="small muted">${d.end.kind === 'six' ? `Rolled a 6 · ${fmt(t.six)}` : `Archfiend Dye · ${fmt(d.end.dye)}`}</span><b class="num ${d.pnl >= 0 ? 'pos' : 'neg'}">${signed(d.pnl)}</b>`;
+    return `<div class="todo">
+      <div class="ico" style="${look}">${itemPic(d.end?.kind === 'dye' ? 'Archfiend Dye' : t.name, 30) || ic(P.dice, 22)}</div>
+      <div class="grow" style="min-width:0;display:flex;flex-direction:column;gap:4px">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0"><span class="ell" style="font-weight:600;font-size:15px">${t.name}</span>${d.end ? `<span class="pill" style="background:var(--chip);color:var(--nav)">${d.end.kind === 'six' ? '6' : '7 · Dye'}</span>` : ''}</div>
+        <span class="small muted">Paid ${fmt(d.paid)} · ${d.rolls} roll${d.rolls === 1 ? '' : 's'} × ${fmt(t.roll)} · ${d.end ? 'ended ' + shortDate(d.end.at) : 'since ' + shortDate(d.bought)}</span></div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:120px">${status}</div>
+      ${d.end ? `<button type="button" class="btn ghost sm" data-act="diceDrop" data-id="${d.id}">Edit drop</button>`
+        : `<div style="display:flex;gap:6px;align-items:center"><button type="button" class="btn ghost sm" data-act="diceRoll" data-id="${d.id}" data-v="-1" aria-label="Remove a roll" ${d.rolls ? '' : 'disabled'}>−1</button><button type="button" class="btn ghost sm" data-act="diceRoll" data-id="${d.id}" data-v="1">+1 roll</button><button type="button" class="btn sm" data-act="diceDrop" data-id="${d.id}">Got the drop</button></div>`}
+      <button type="button" class="iconbtn" style="opacity:1" data-act="editDice" data-id="${d.id}" aria-label="Edit dice">${ic(P.edit, 15)}</button></div>`;
+  };
+  return `
+  <div class="top"><div><h1>Dice</h1><p>${esc(profileName(db.activeProfile))} · Archfiend dice: count your rolls, log the drop, see what you made.</p></div>
+    <button type="button" class="btn" data-act="newDice">${ic(P.plus, 18, 2)}New dice</button></div>
+  <div class="cards">
+    <div class="card"><span>Net result</span><div class="big ${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${signed(net)}</div><span class="small muted">${done.length} finished dice</span></div>
+    <div class="card"><span>In progress</span><div class="big">${open.length}</div><span class="small muted">${fmt(sum(open, (d) => d.spent))} spent so far</span></div>
+    <div class="card"><span>Rolls</span><div class="big">${sum(all, (d) => d.rolls)}</div><span class="small muted">all dice</span></div>
+    <div class="card"><span>Dyes</span><div class="big">${dyes}</div><span class="small muted">${done.length - dyes} paid out with a 6</span></div>
+  </div>
+  ${open.length ? `<section class="panel"><h2>In progress</h2>${open.map(row).join('')}</section>` : ''}
+  <section class="panel"><h2>Finished</h2>${done.map(row).join('') || '<span class="small muted">No finished dice yet. When a dice gives its 6 or its dye, click Got the drop.</span>'}</section>`;
+}
+
+function diceModal(d) {
+  const isEdit = !!d;
+  d = d || { type: 'af', paid: null, rolls: 0, bought: localISO(new Date()) };
+  const form = openModal(`<form novalidate>${dHead(isEdit ? 'Edit dice' : 'New dice', 'Pick the dice and what you paid for it.')}
+    <div class="dbody">
+      <div class="field"><span class="flabel">Dice</span>${radios('type', Object.entries(L.DICE).map(([k, t]) => [k, itemPic(t.name, 20) + t.name]), d.type, 'Dice type')}
+        <span class="small muted" id="dinfo"></span></div>
+      <div class="cols">
+        <div class="field"><label class="flabel" for="dpaid">Price paid</label><input class="in" id="dpaid" name="paid" value="${esc(toShort(d.paid))}" placeholder="e.g. 1.2m" autofocus></div>
+        <div class="field"><label class="flabel" for="drolls">Rolls so far</label><input class="in" id="drolls" name="rolls" type="number" min="0" step="1" value="${d.rolls}"></div>
+      </div>
+      <label class="field"><span>Bought</span><input class="in" type="datetime-local" name="bought" value="${esc(d.bought)}" style="max-width:260px"></label>
+      <span class="err" role="alert"></span>
+    </div>${dFoot(isEdit ? 'Save changes' : 'Add dice', isEdit && 'Delete')}</form>`);
+  const info = () => { const t = L.DICE[new FormData(form).get('type')]; $('#dinfo').textContent = `${fmt(t.roll)} per roll · a 6 (${t.odds6}) pays ${fmt(t.six)} · a 7 (${t.odds7}) drops an Archfiend Dye`; };
+  form.addEventListener('change', info); info();
+  form.querySelector('[data-del]')?.addEventListener('click', () => {
+    if (!confirm('Delete this dice? This cannot be undone.')) return;
+    db.dice = db.dice.filter((x) => x.id !== d.id); closeModal(); commit();
+  });
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(form), paid = parse(fd.get('paid')), rolls = Number(fd.get('rolls'));
+    if (paid == null) return setErr(form, 'Enter what you paid for the dice, like 1.2m (0 is fine).');
+    if (!Number.isInteger(rolls) || rolls < 0) return setErr(form, 'Rolls must be a whole number, 0 or more.');
+    if (!fd.get('bought')) return setErr(form, 'Pick the date you bought it.');
+    const data = { type: fd.get('type'), paid, rolls, bought: fd.get('bought') };
+    if (isEdit) Object.assign(byId(db.dice, d.id), data);
+    else db.dice.push({ id: uid(), profileId: db.activeProfile, end: null, ...data });
+    closeModal(); commit();
+  };
+}
+
+function dropModal(d) {
+  const t = L.DICE[d.type], end = d.end || { kind: 'six', dye: db.prefs.dyePrice ?? null, at: localISO(new Date()) };
+  const form = openModal(`<form novalidate>${dHead(d.end ? 'Edit drop' : 'Got the drop', esc(t.name) + ' · the dice ends when it drops.')}
+    <div class="dbody">
+      <div class="field"><span class="flabel">What did it give?</span>${radios('kind', [['six', `${coin(16)}A 6 · ${fmt(t.six)} coins`], ['dye', `${itemPic('Archfiend Dye', 20)}A 7 · Archfiend Dye`]], end.kind, 'Drop')}</div>
+      <div class="cols">
+        <div class="field"><label class="flabel" for="drolls2">Total rolls</label><input class="in" id="drolls2" name="rolls" type="number" min="1" step="1" value="${d.end ? d.rolls : d.rolls + 1}"><span class="small muted">Including the roll that dropped.</span></div>
+        <div class="field" id="dyef"><label class="flabel" for="dye">Dye price</label><input class="in" id="dye" name="dye" value="${esc(toShort(end.dye))}" placeholder="e.g. 700m"><span class="small muted">What the dye is worth or sold for.</span></div>
+      </div>
+      <label class="field"><span>Date</span><input class="in" type="datetime-local" name="at" value="${esc(end.at)}" style="max-width:260px"></label>
+      <div class="box" id="dres"></div>
+      <span class="err" role="alert"></span>
+    </div>${dFoot(d.end ? 'Save' : 'Log the drop', d.end && 'Reopen dice')}</form>`);
+  const calc = () => {
+    const fd = new FormData(form), kind = fd.get('kind'), rolls = Number(fd.get('rolls')), dye = parse(fd.get('dye'));
+    const ok = Number.isInteger(rolls) && rolls >= 1 && (kind === 'six' || dye != null);
+    return { ok, kind, rolls, dye, r: ok ? L.diceResult({ type: d.type, paid: d.paid, rolls, end: { kind, dye } }) : null };
+  };
+  const update = () => {
+    const c = calc();
+    $('#dyef').hidden = c.kind !== 'dye';
+    $('#dres').innerHTML = `<div style="display:flex;align-items:center"><span class="grow" style="font-weight:600">${!c.ok ? 'Check the amounts' : c.r.pnl >= 0 ? 'Profit' : 'Loss'}</span><span class="big ${c.ok ? (c.r.pnl >= 0 ? 'pos' : 'neg') : 'muted'}">${c.ok ? signed(c.r.pnl) : '—'}</span></div>
+      <div class="small muted">${c.ok ? `Got ${fmt(c.r.payout)} · spent ${fmt(c.r.spent)} (dice ${fmt(d.paid)} + ${c.rolls} × ${fmt(t.roll)})` : ''}</div>`;
+  };
+  form.addEventListener('input', update); form.addEventListener('change', update); update();
+  form.querySelector('[data-del]')?.addEventListener('click', () => { byId(db.dice, d.id).end = null; closeModal(); commit(); });
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const c = calc(), at = new FormData(form).get('at');
+    if (!c.ok) return setErr(form, c.kind === 'dye' ? 'Enter the dye price, like 700m, and the total rolls (1 or more).' : 'Enter the total rolls (1 or more).');
+    if (!at) return setErr(form, 'Pick the date.');
+    if (c.kind === 'dye') db.prefs.dyePrice = c.dye;
+    Object.assign(byId(db.dice, d.id), { rolls: c.rolls, end: { kind: c.kind, dye: c.kind === 'dye' ? c.dye : null, at } });
+    closeModal(); commit();
+  };
+}
+
 /* ---------- render ---------- */
-const VIEWS = { inv: viewInv, history: viewHistory, cal: viewCal, todo: viewTodo, timers: viewTimers, stats: viewStats, settings: viewSettings };
-const PLACEHOLDER = { inv: 'Search items or notes…', history: 'Search sold items…', cal: 'Search events…', todo: 'Search tasks…', timers: 'Search timers…', stats: 'Search…', settings: 'Search…' };
+const VIEWS = { dice: viewDice, inv: viewInv, history: viewHistory, cal: viewCal, todo: viewTodo, timers: viewTimers, stats: viewStats, settings: viewSettings };
+const PLACEHOLDER = { dice: 'Search…', inv: 'Search items or notes…', history: 'Search sold items…', cal: 'Search events…', todo: 'Search tasks…', timers: 'Search timers…', stats: 'Search…', settings: 'Search…' };
 function render() {
   $('#side').innerHTML = sideHtml();
   const main = $('#view');
@@ -895,6 +1011,7 @@ const setErr = (form, msg) => { form.querySelector('.err').textContent = msg; };
 const flipIcon = (f, m, size) => (f.img ? `<img class="pix" src="${esc(f.img)}" alt="" style="width:${size + 8}px;height:${size + 8}px">` : ic(P[m.icon], size));
 // item name -> icon path, from the bundled item list (items.js)
 const ITEM_BY_NAME = new Map(ITEMS.map(([n, file]) => [n.toLowerCase(), file]));
+const itemPic = (name, size) => { const src = itemImg(name); return src ? `<img class="pix" src="${src}" alt="" width="${size}" height="${size}" style="vertical-align:middle;margin-right:6px">` : ''; };
 const itemImg = (name) => { const file = ITEM_BY_NAME.get(String(name).trim().toLowerCase()); return file ? 'items/' + file : null; };
 function itemMatches(q, max = 8) {
   q = q.trim().toLowerCase();
@@ -1096,7 +1213,7 @@ function flipModal(f) {
 }
 
 function sellModal(raw) {
-  const f = derive(raw), m = catMeta(f.cat);
+  const f = derive(raw), m = catMeta(f.cat), partial = !f.sold && f.qty > 1;
   const form = openModal(`<form novalidate>${dHead(f.sold ? 'Edit sale' : 'Close flip', 'Enter what you sold it for. Profit or loss is calculated for you.')}
     <div class="dbody">
       <div class="box" style="flex-direction:row;align-items:center;gap:14px">
@@ -1104,25 +1221,40 @@ function sellModal(raw) {
         <div class="grow" style="display:flex;flex-direction:column;gap:2px;min-width:0"><div style="display:flex;gap:8px;align-items:center"><b class="ell">${esc(f.name)}</b><span class="pill" style="background:${m.tint};color:${m.ink}">${esc(m.label)}</span></div>
           <span class="small muted">Bought ${dateLabel(f.bought)} · ${f.unit === 'lot' ? 'lot of ' + f.qty + ' for ' + fmt(f.price) : f.qty + ' × ' + fmt(f.price) + ' each'}</span></div>
         <div style="text-align:right"><span class="small muted">Cost</span><div class="disp" style="font-size:18px">${fmt(f.cost)}</div></div></div>
+      ${partial ? `<div class="field"><label class="flabel" for="sqty">Quantity sold <small class="muted">· of ${f.qty}</small></label><input class="in" id="sqty" name="sqty" type="number" min="1" max="${f.qty}" step="1" value="${f.qty}" style="max-width:160px"><span class="small muted">Sell part of it: the rest stays open as its own flip.</span></div>` : ''}
       <div class="cols">
         <div class="field"><label class="flabel" for="sell">Sell price</label><input class="in" id="sell" name="sell" value="${esc(toShort(f.sell))}" placeholder="760m" autofocus></div>
         <div class="field"><span class="flabel">Price is</span>${radios('mode', [['total', 'Total'], ['each', 'Each']], 'total', 'Sell price applies to')}</div>
-        <div class="field"><label class="flabel" for="fees">Fees &amp; tax <small class="muted">· optional</small></label><input class="in" id="fees" name="fees" value="${esc(f.fees ? toShort(f.fees) : '')}" placeholder="0"></div>
+        <div class="field"><span class="flabel">Sold on</span>${radios('market', [['ah', 'AH'], ['bz', 'Bazaar']], db.prefs.market || 'ah', 'Sold on')}</div>
       </div>
+      <div class="field"><label class="flabel" for="fees">Fees &amp; tax</label><input class="in" id="fees" name="fees" value="${esc(f.fees ? toShort(f.fees) : '')}" placeholder="0" style="max-width:220px"><span class="small muted" id="feehint"></span></div>
       <label class="field"><span>Sell date</span><input class="in" type="datetime-local" name="soldAt" value="${esc(f.soldAt || localISO(new Date()))}"></label>
       <div class="box" id="res"></div>
       <span class="err" role="alert"></span>
     </div>${dFoot(f.sold ? 'Save sale' : 'Close flip', f.sold && 'Reopen flip')}</form>`);
   const calc = () => {
     const fd = new FormData(form), sv = parse(fd.get('sell')), fees = fd.get('fees').trim() ? parse(fd.get('fees')) : 0;
-    const ok = sv != null && fees != null;
-    const revenue = ok ? (fd.get('mode') === 'each' ? sv * f.qty : sv) : 0;
-    return { ok, revenue, fees, pnl: revenue - fees - f.cost };
+    const n = partial ? Number(fd.get('sqty')) : f.qty, cost = (f.cost * n) / f.qty;
+    const ok = sv != null && fees != null && Number.isInteger(n) && n >= 1 && n <= f.qty;
+    const revenue = ok ? (fd.get('mode') === 'each' ? sv * n : sv) : 0;
+    return { ok, n, cost, revenue, fees, pnl: revenue - fees - cost };
   };
-  const update = () => {
+  let feesAuto = !(f.sold && f.fees); // an existing sale keeps the fees it was saved with
+  const autoFees = () => {
+    const fd = new FormData(form), sv = parse(fd.get('sell')), n = partial ? Number(fd.get('sqty')) : f.qty;
+    return sv == null || !(n >= 1) ? null : L.sellFees(fd.get('market'), sv, n, fd.get('mode') === 'each', db.prefs.bzTax ?? 1.25);
+  };
+  form.addEventListener('click', (e) => { if (e.target.closest('[data-recalc]')) { feesAuto = true; update(); } });
+  const update = (e) => {
+    if (e?.target?.id === 'fees') feesAuto = false;
+    const a = autoFees();
+    if (feesAuto) form.elements.fees.value = a ? toShort(a) : '';
+    const hint = feesAuto ? (new FormData(form).get('market') === 'bz' ? `Calculated: Bazaar tax ${db.prefs.bzTax ?? 1.25}% (change it in Settings). You can edit it.` : 'Calculated: AH BIN listing fee + 1% claim tax. You can edit it.')
+      : a != null ? `Edited by hand. <button type="button" class="link" data-recalc="">Use calculated (${fmt(a)})</button>` : 'Edited by hand.';
+    if ($('#feehint').innerHTML !== hint) $('#feehint').innerHTML = hint; // redrawing it under the mouse would swallow the click on the button
     const r = calc(), gain = r.pnl >= 0;
     $('#res').innerHTML = `<div style="display:flex;align-items:center"><span class="grow" style="font-weight:600">${!r.ok ? 'Check the amounts' : gain ? 'Profit' : 'Loss'}</span><span class="big ${r.ok ? (gain ? 'pos' : 'neg') : 'muted'}">${r.ok ? signed(r.pnl) : '—'}</span></div>
-      <div style="display:flex;gap:24px;flex-wrap:wrap" class="small"><span class="muted">Revenue <b style="color:var(--text)">${r.ok ? fmt(r.revenue) : '—'}</b></span><span class="muted">Per item <b style="color:var(--text)">${r.ok ? fmt(r.revenue / f.qty) : '—'}</b></span><span class="muted">ROI <b style="color:var(--text)">${r.ok ? (gain ? '+' : '−') + Math.abs((r.pnl / f.cost) * 100).toFixed(1) + '%' : '—'}</b></span></div>`;
+      <div style="display:flex;gap:24px;flex-wrap:wrap" class="small"><span class="muted">Revenue <b style="color:var(--text)">${r.ok ? fmt(r.revenue) : '—'}</b></span><span class="muted">Per item <b style="color:var(--text)">${r.ok ? fmt(r.revenue / r.n) : '—'}</b></span><span class="muted">ROI <b style="color:var(--text)">${r.ok ? (gain ? '+' : '−') + Math.abs((r.pnl / r.cost) * 100).toFixed(1) + '%' : '—'}</b></span>${r.ok && r.n < f.qty ? `<span class="muted">Cost of these ${r.n} <b style="color:var(--text)">${fmt(r.cost)}</b> · ${f.qty - r.n} stay open</span>` : ''}</div>`;
   };
   form.addEventListener('input', update);
   form.addEventListener('change', update);
@@ -1132,9 +1264,15 @@ function sellModal(raw) {
   form.onsubmit = (e) => {
     e.preventDefault();
     const r = calc(), soldAt = new FormData(form).get('soldAt');
-    if (!r.ok) return setErr(form, 'Enter a valid sell price (and fees), like 760m.');
+    if (!r.ok) return setErr(form, partial ? `Enter a valid sell price (and fees), like 760m, and a quantity from 1 to ${f.qty}.` : 'Enter a valid sell price (and fees), like 760m.');
     if (!soldAt) return setErr(form, 'Pick a sell date.');
-    Object.assign(byId(db.flips, f.id), { sell: r.revenue, fees: r.fees, soldAt });
+    db.prefs.market = new FormData(form).get('market');
+    const orig = byId(db.flips, f.id);
+    if (r.n < f.qty) {
+      const p = L.splitBuy(orig.price, orig.unit, orig.qty, r.n);
+      db.flips.push({ ...orig, id: uid(), qty: r.n, price: p.sold, sell: r.revenue, fees: r.fees, soldAt });
+      Object.assign(orig, { qty: orig.qty - r.n, price: p.rest });
+    } else Object.assign(orig, { sell: r.revenue, fees: r.fees, soldAt });
     ui.sel.delete(f.id);
     closeModal(); commit();
   };
@@ -1150,13 +1288,15 @@ function sellManyModal(flips) {
         <span style="display:flex;flex-direction:column;min-width:0"><b class="ell">${esc(f.name)}</b><span class="small muted">Cost ${fmt(f.cost)}${f.qty > 1 ? ` · ${f.qty} items` : ''}</span></span></div></td>
       <td><input class="in" name="sell_${f.id}" placeholder="e.g. 760m" aria-label="Sell price for ${esc(f.name)}" style="height:38px"></td>
       <td>${f.qty > 1 ? radios('mode_' + f.id, [['total', 'Total'], ['each', 'Each']], 'total', 'Price for ' + esc(f.name) + ' is') : `<input type="hidden" name="mode_${f.id}" value="total"><span class="small muted">Total</span>`}</td>
-      <td><input class="in" name="fees_${f.id}" placeholder="0" aria-label="Fees for ${esc(f.name)}" style="height:38px;width:90px"></td>
+      <td><input class="in" name="fees_${f.id}" placeholder="0" aria-label="Fees for ${esc(f.name)}" style="height:38px;width:100px"></td>
       <td class="res num" style="font-weight:600;text-align:right">—</td></tr>`;
   }).join('');
   const form = openModal(`<form novalidate>${dHead(`Sell ${flips.length} flips`, 'Enter what each one sold for. Profit or loss is calculated for each.')}
     <div class="dbody">
       <div class="table" style="margin:0"><table class="hist" style="min-width:720px"><thead><tr><th>Item</th><th>Sell price</th><th>Price is</th><th>Fees</th><th style="text-align:right">Result</th></tr></thead><tbody>${rows}</tbody></table></div>
-      <label class="field"><span>Sell date <small>· for all of them</small></span><input class="in" type="datetime-local" name="soldAt" value="${localISO(new Date())}" style="max-width:260px"></label>
+      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end"><label class="field"><span>Sell date <small>· for all of them</small></span><input class="in" type="datetime-local" name="soldAt" value="${localISO(new Date())}" style="max-width:260px"></label>
+        <div class="field"><span class="flabel">Sold on</span>${radios('market', [['ah', 'AH'], ['bz', 'Bazaar']], db.prefs.market || 'ah', 'Sold on')}</div></div>
+      <span class="small muted">Fees are calculated from the sell price (AH: BIN listing fee + 1% claim tax; Bazaar: ${db.prefs.bzTax ?? 1.25}%). You can edit any of them.</span>
       <div class="box" style="flex-direction:row;align-items:center"><span class="grow muted" id="manysum"></span><span class="big" id="manytot">—</span></div>
       <span class="err" role="alert"></span>
     </div>${dFoot(`Sell ${flips.length} flips`)}</form>`, 'wide');
@@ -1169,7 +1309,16 @@ function sellManyModal(flips) {
       return { f, ok, filled: !!fd.get('sell_' + f.id).trim(), revenue, fees, pnl: revenue - fees - f.cost };
     });
   };
-  const update = () => {
+  const handFees = new Set(); // rows whose fees were typed by hand
+  const update = (e) => {
+    const nm = e?.target?.name || '';
+    if (nm.startsWith('fees_')) handFees.add(nm.slice(5));
+    const fd = new FormData(form);
+    for (const f of flips) {
+      if (handFees.has(f.id)) continue;
+      const sv = parse(fd.get('sell_' + f.id));
+      form.elements['fees_' + f.id].value = sv == null ? '' : toShort(L.sellFees(fd.get('market'), sv, f.qty, fd.get('mode_' + f.id) === 'each', db.prefs.bzTax ?? 1.25));
+    }
     const r = calc();
     r.forEach((x) => {
       const td = form.querySelector(`tr[data-id="${x.f.id}"] .res`);
@@ -1191,6 +1340,7 @@ function sellManyModal(flips) {
     const bad = r.filter((x) => !x.ok);
     if (bad.length) return setErr(form, `Enter a valid sell price for ${bad.map((x) => x.f.name).join(', ')}.`);
     if (!soldAt) return setErr(form, 'Pick a sell date.');
+    db.prefs.market = new FormData(form).get('market');
     r.forEach((x) => Object.assign(byId(db.flips, x.f.id), { sell: x.revenue, fees: x.fees, soldAt }));
     ui.sel.clear();
     closeModal(); commit();
@@ -1376,6 +1526,7 @@ function profileModal(p, canDelete = true) { // deleting is only offered from Se
     db.profiles = db.profiles.filter((x) => x.id !== p.id);
     db.flips = db.flips.filter((f) => f.profileId !== p.id);
     db.passive = db.passive.filter((x) => x.profileId !== p.id);
+    db.dice = db.dice.filter((x) => x.profileId !== p.id);
     db.timers = db.timers.filter((x) => x.profileId !== p.id);
     db.todos.forEach((t) => t.done && delete t.done[p.id]);
     if (db.activeProfile === p.id) db.activeProfile = db.profiles[0].id;
@@ -1480,6 +1631,10 @@ const A = {
   period: (b) => { db.prefs.period = b.dataset.v; commit(); },
   prefSet: (b) => { db.prefs[b.dataset.k] = b.dataset.v; commit(); },
   chartSet: (b) => { db.prefs.chart[b.dataset.k] = b.dataset.v; commit(); },
+  newDice: () => diceModal(),
+  editDice: (b) => diceModal(byId(db.dice, b.dataset.id)),
+  diceDrop: (b) => dropModal(byId(db.dice, b.dataset.id)),
+  diceRoll: (b) => { const d = byId(db.dice, b.dataset.id); d.rolls = Math.max(0, d.rolls + Number(b.dataset.v)); commit(); },
   togglePassive: () => { ui.passiveOpen = !ui.passiveOpen; render(); },
   close: () => closeModal(),
 };
@@ -1503,6 +1658,7 @@ document.addEventListener('change', (e) => {
   if (id) { byId(db.calendars, id).visible = e.target.checked; commit(); }
   const ck = e.target.dataset?.chartcat;
   if (ck) { const h = new Set(db.prefs.chart.hidden); e.target.checked ? h.delete(ck) : h.add(ck); db.prefs.chart.hidden = [...h]; commit(); }
+  if (e.target.id === 'bztax') { const v = Number(e.target.value); if (e.target.value !== '' && v >= 0 && v <= 1.25) { db.prefs.bzTax = v; commit(); } else e.target.value = db.prefs.bzTax ?? 1.25; }
   if (e.target.id === 'autoupd') { db.prefs.autoUpdate = e.target.checked; commit(); if (e.target.checked && upd.avail) installUpdate(); }
   const pf = e.target.dataset?.pref;
   if (pf && e.target.value) { db.prefs[pf] = e.target.value; commit(); }

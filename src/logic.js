@@ -123,7 +123,34 @@
     });
   };
 
-  const api = { candles, buckets, qfPct, forgeEnd, secText, UNIT_MS, SB_YEAR_ANCHOR, SB_YEAR_MIN, fmt, signed, parse, stepAt, splitMin, everyText, todoState, occurrences };
+  // Split a purchase when only n of qty items are sold. A lot price is shared pro rata; the two parts always add up to the original.
+  const splitBuy = (price, unit, qty, n) => {
+    if (unit !== 'lot') return { sold: price, rest: price };
+    const rest = Math.round((price * (qty - n)) / qty);
+    return { sold: price - rest, rest };
+  };
+
+  // Hypixel sell fees for one sale. AH (BIN): listing fee 1% < 10M, 2% < 100M, else 2.5%, plus 1% claim tax from 1M; duration fee ignored.
+  // Each AH listing is taxed on its own, so with a per-item price the tier comes from one item. Bazaar: a flat rate (1.25% → 1% with perks).
+  const ahFee = (p) => p * ((p < 10e6 ? 0.01 : p < 100e6 ? 0.02 : 0.025) + (p >= 1e6 ? 0.01 : 0));
+  const sellFees = (market, price, n, each, bzPct) => {
+    const total = each ? price * n : price;
+    return Math.round(market === 'bz' ? (total * bzPct) / 100 : each ? n * ahFee(price) : ahFee(total));
+  };
+
+  // Archfiend dice: every roll costs coins; a 6 pays out coins, a 7 drops an Archfiend Dye. Either one ends the dice.
+  const DICE = {
+    af: { name: 'Archfiend Dice', roll: 666700, six: 15e6, odds6: '1 in 24', odds7: '1 in 6,666' },
+    hc: { name: 'High Class Archfiend Dice', roll: 6.7e6, six: 100e6, odds6: '1 in 16', odds7: '1 in 666' },
+  };
+  // d: { type, paid, rolls, end: null | { kind: 'six' | 'dye', dye } } → coins spent so far, payout, result
+  const diceResult = (d) => {
+    const spent = d.paid + d.rolls * DICE[d.type].roll;
+    const payout = !d.end ? 0 : d.end.kind === 'six' ? DICE[d.type].six : d.end.dye;
+    return { spent, payout, pnl: payout - spent };
+  };
+
+  const api = { DICE, diceResult, sellFees, splitBuy, candles, buckets, qfPct, forgeEnd, secText, UNIT_MS, SB_YEAR_ANCHOR, SB_YEAR_MIN, fmt, signed, parse, stepAt, splitMin, everyText, todoState, occurrences };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.L = api;
 })(this);

@@ -112,4 +112,21 @@ assert.deepStrictEqual(L.candles(cEv, cB, at('2026-11-26T00:00')), [
   { o: -2, c: 2, hi: 2, lo: -2 },
 ]);
 
+assert.deepStrictEqual(L.splitBuy(60e6, 'each', 10, 3), { sold: 60e6, rest: 60e6 });
+assert.deepStrictEqual(L.splitBuy(1e9, 'lot', 10, 3), { sold: 3e8, rest: 7e8 });
+{ const r = L.splitBuy(100, 'lot', 3, 1); assert.strictEqual(r.sold + r.rest, 100); }
+
+assert.strictEqual(L.sellFees('ah', 500e3, 1, false, 1.25), 5e3); // 1%, no claim tax under 1M
+assert.strictEqual(L.sellFees('ah', 5e6, 1, false, 1.25), 1e5); // 1% + 1%
+assert.strictEqual(L.sellFees('ah', 50e6, 1, false, 1.25), 1.5e6); // 2% + 1%
+assert.strictEqual(L.sellFees('ah', 200e6, 1, false, 1.25), 7e6); // 2.5% + 1%
+assert.strictEqual(L.sellFees('ah', 15e6, 10, true, 1.25), 4.5e6); // tier from one item: 10 × 3% of 15M
+assert.strictEqual(L.sellFees('ah', 150e6, 10, false, 1.25), 5.25e6); // total 150M → 3.5%
+assert.strictEqual(L.sellFees('bz', 1e6, 4, true, 1.25), 5e4);
+assert.strictEqual(L.sellFees('bz', 1e6, 1, false, 1), 1e4);
+
+assert.deepStrictEqual(L.diceResult({ type: 'af', paid: 1e6, rolls: 3, end: null }), { spent: 3000100, payout: 0, pnl: -3000100 });
+assert.strictEqual(L.diceResult({ type: 'af', paid: 1e6, rolls: 10, end: { kind: 'six' } }).pnl, 15e6 - 1e6 - 6667000);
+assert.strictEqual(L.diceResult({ type: 'hc', paid: 50e6, rolls: 20, end: { kind: 'dye', dye: 800e6 } }).pnl, 800e6 - 50e6 - 134e6);
+
 console.log('logic tests passed');
