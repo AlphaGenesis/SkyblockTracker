@@ -1,0 +1,13 @@
+{
+  "name": "skyblock-tracker",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "test": "node tests/logic.test.js"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
