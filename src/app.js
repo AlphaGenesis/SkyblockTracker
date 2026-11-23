@@ -24,6 +24,7 @@ const dur = (ms) => { const m = Math.max(1, Math.ceil(ms / 6e4)); const d = Math
 /* ---------- icons ---------- */
 const ic = (d, s = 18, w = 1.8) => `<svg aria-hidden="true" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const P = {
+  download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
   all: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>',
   mayor: '<path d="M3 8l4.5 3.5L12 5l4.5 6.5L21 8l-2 11H5z"/>',
   skins: '<path d="M8.5 3.5L3.5 6.5l2 4 2-1v11h9v-11l2 1 2-4-5-3c-.5 1.6-1.9 2.5-3.5 2.5S9 5.1 8.5 3.5z"/>',
@@ -212,6 +213,7 @@ function sideHtml() {
     <div class="big">${fmt(sum(flips, (f) => f.cost))}${coin()}</div>
     <span class="small ${net >= 0 ? 'pos' : 'neg'}" style="font-weight:500">${signed(net)} net realized</span>
   </div>
+  ${upd.avail && !upd.busy ? `<button type="button" class="nav updbtn" data-act="installUpdate">${ic(P.download, 18, 2)}<span class="grow">Update to v${esc(upd.avail.version)}</span></button>` : ''}
   ${navBtn(ui.view === 'settings', P.settings, 'Settings', '', 'data-act="nav" data-view="settings"')}
   <button type="button" class="nav kofi" data-act="kofi" aria-label="Support me on Ko-fi (opens your browser)">
     <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24"><path d="M3 6.5h14.5a3.5 3.5 0 0 1 0 7H16.6A6.5 6.5 0 0 1 10.5 18h-1A6.5 6.5 0 0 1 3 11.5z" fill="#fff"/><path d="M16.8 8.6h.7a1.4 1.4 0 0 1 0 2.8h-.7z" fill="#29abe0"/><path d="M9.9 14.6s-3.4-2.1-3.4-4.2a1.7 1.7 0 0 1 3.4-.6 1.7 1.7 0 0 1 3.4.6c0 2.1-3.4 4.2-3.4 4.2z" fill="#ff5e5b"/></svg>
@@ -253,7 +255,8 @@ function viewInv() {
         <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
           <div style="display:flex;align-items:center;gap:8px;min-width:0"><span class="ell" style="font-weight:600;font-size:15px">${esc(f.name)}</span><span class="pill" style="background:${m.tint};color:${m.ink}">${esc(m.label)}</span></div>
           <span class="small muted">Bought ${dateLabel(f.bought)}</span></div></div>
-      <div><div style="display:flex;align-items:center;gap:6px">${coin(15)}<span class="num" style="font-weight:600;font-size:15px">${fmt(f.price)}</span></div><span class="small muted">per ${f.unit === 'lot' ? 'lot' : 'item'}</span></div>
+      <div><div style="display:flex;align-items:center;gap:6px">${coin(15)}<span class="num" style="font-weight:600;font-size:15px">${fmt(f.cost)}</span></div><span class="small muted">total</span></div>
+      <div><div style="display:flex;align-items:center;gap:6px">${coin(13)}<span class="num" style="font-weight:600;font-size:14px">${fmt(f.cost / f.qty)}</span></div><span class="small muted">each</span></div>
       <div><div class="num" style="font-weight:600;font-size:15px">${f.qty}</div><span class="small muted">qty</span></div>
       <span class="clamp" style="color:${f.note ? 'var(--nav)' : 'var(--muted2)'}">${f.note ? esc(f.note) : 'No note'}</span>
       <div>${f.shot ? `<button type="button" class="shot" data-act="shot" data-id="${f.id}" aria-label="Open screenshot of ${esc(f.name)}"><img src="${esc(f.shot)}" alt=""></button>` : '<span style="color:var(--muted2)">—</span>'}</div>
@@ -279,7 +282,7 @@ function viewInv() {
     <div class="seg" role="tablist" aria-label="Flip status">${tabs}</div>
     <span class="small muted" style="font-size:13px">Sorted by ${s.label} · ${ui.sort.dir > 0 ? s.asc : s.desc}${ui.sort.key !== 'date' ? ' <button type="button" class="link" data-act="sortBy" data-v="date">Reset</button>' : ''}</span></div>
   <div class="table"><div class="rows">
-    <div class="row head"><span></span><span>${th('name', 'Item')}</span><span>${th('price', 'Buy price')}</span><span>${th('qty', 'Qty')}</span><span>Note</span><span>Screenshot</span><span>Status</span><span></span></div>
+    <div class="row head"><span></span><span>${th('name', 'Item')}</span><span>${th('price', 'Total')}</span><span>${th('each', 'Each')}</span><span>${th('qty', 'Qty')}</span><span>Note</span><span>Screenshot</span><span>Status</span><span></span></div>
     ${shown.map(row).join('') || '<div class="empty"><b style="font-size:15px">No flips here yet</b><span class="muted">Log your next purchase to start tracking it.</span></div>'}
   </div></div>
   ${selList.length ? `<div class="selbar">
@@ -296,7 +299,8 @@ function viewInv() {
 const SORTS = {
   date: { get: (f) => String(f.bought), label: 'purchase date', asc: 'oldest first', desc: 'newest first', first: -1 },
   name: { get: (f) => f.name.toLowerCase(), label: 'item', asc: 'A → Z', desc: 'Z → A', first: 1 },
-  price: { get: (f) => f.price, label: 'buy price', asc: 'lowest first', desc: 'highest first', first: -1 },
+  price: { get: (f) => f.cost, label: 'total price', asc: 'lowest first', desc: 'highest first', first: -1 },
+  each: { get: (f) => f.cost / f.qty, label: 'price each', asc: 'lowest first', desc: 'highest first', first: -1 },
   qty: { get: (f) => f.qty, label: 'quantity', asc: 'lowest first', desc: 'highest first', first: -1 },
 };
 
@@ -814,6 +818,11 @@ function viewSettings() {
     <span class="small muted">Everything is saved in one JSON file. To edit it by hand: open the folder, edit <b>data.json</b>, save it, then click Reload. Don't change anything in the app while you edit, or the app will overwrite your edits. A copy of the previous version is kept as data.json.bak.</span>
     <code style="padding:10px 12px;border-radius:10px;background:var(--field);border:1px solid var(--fieldline);user-select:text;word-break:break-all">${esc(dataPath)}</code>
     <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="button" class="btn ghost" data-act="openData" ${T ? '' : 'disabled'}>${ic(P.folder, 17)}Open data folder</button><button type="button" class="btn ghost" data-act="reloadData">Reload from file</button></div>
+  </section>
+  <section class="panel"><h2>Updates</h2>
+    <span class="small muted">Version ${esc(upd.version || '?')}. The app checks GitHub for a new version when it starts.</span>
+    <div class="box"><div class="switchrow"><div class="grow"><label for="autoupd" style="font-weight:500">Install updates automatically</label><div class="small muted">On: a new version is installed and the app restarts by itself. Off: an Update button appears in the sidebar.</div></div><input type="checkbox" class="switch" id="autoupd" ${db.prefs.autoUpdate ? 'checked' : ''}></div></div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button type="button" class="btn ghost" data-act="checkUpdate" ${T?.updater && !upd.busy ? '' : 'disabled'}>Check for updates</button>${upd.avail && !upd.busy ? `<button type="button" class="btn" data-act="installUpdate">Update to v${esc(upd.avail.version)}</button>` : ''}<span class="small muted" role="status">${esc(T?.updater ? upd.status : 'Updates only work in the installed app.')}</span></div>
   </section>`;
 }
 
@@ -1465,6 +1474,8 @@ const A = {
   toggleAll: () => { ui.catsOpen = !ui.catsOpen; render(); },
   editProfile: (b) => profileModal(byId(db.profiles, b.dataset.id)),
   openData: () => T.core.invoke('open_data_dir').catch((e) => alert('Could not open the folder: ' + e)),
+  checkUpdate: () => checkUpdate(),
+  installUpdate: () => installUpdate(),
   reloadData: async () => { await saving; await load(); render(); },
   period: (b) => { db.prefs.period = b.dataset.v; commit(); },
   prefSet: (b) => { db.prefs[b.dataset.k] = b.dataset.v; commit(); },
@@ -1492,6 +1503,7 @@ document.addEventListener('change', (e) => {
   if (id) { byId(db.calendars, id).visible = e.target.checked; commit(); }
   const ck = e.target.dataset?.chartcat;
   if (ck) { const h = new Set(db.prefs.chart.hidden); e.target.checked ? h.delete(ck) : h.add(ck); db.prefs.chart.hidden = [...h]; commit(); }
+  if (e.target.id === 'autoupd') { db.prefs.autoUpdate = e.target.checked; commit(); if (e.target.checked && upd.avail) installUpdate(); }
   const pf = e.target.dataset?.pref;
   if (pf && e.target.value) { db.prefs[pf] = e.target.value; commit(); }
 });
@@ -1602,10 +1614,33 @@ function checkReminders() {
   lastCheck = now;
 }
 
+/* ---------- updates ---------- */
+const upd = { version: '', avail: null, busy: false, status: '' };
+async function checkUpdate() {
+  if (!T?.updater || upd.busy) return;
+  upd.busy = true; upd.status = 'Checking…'; render();
+  try {
+    upd.avail = (await T.updater.check()) || null;
+    upd.status = upd.avail ? `Version ${upd.avail.version} is available.` : 'You have the latest version.';
+  } catch (e) { upd.status = 'Could not check for updates: ' + e; }
+  upd.busy = false; render();
+  if (upd.avail && db.prefs.autoUpdate) installUpdate();
+}
+async function installUpdate() {
+  if (!upd.avail || upd.busy) return;
+  upd.busy = true; upd.status = `Downloading version ${upd.avail.version}…`; render();
+  try {
+    await saving; // don't lose a pending save when the installer closes the app
+    await upd.avail.downloadAndInstall();
+    await T.process.relaunch();
+  } catch (e) { upd.busy = false; upd.status = 'Update failed: ' + e; render(); }
+}
+
 /* ---------- start ---------- */
 load().then(async () => {
   dataPath = T ? await T.core.invoke('data_file').catch((e) => 'Unknown (' + e + ')') : 'Browser storage (no file when the app runs in a browser)';
   render();
   checkTimers(); // timers that finished while the app was closed
+  if (T) { upd.version = await T.app.getVersion().catch(() => ''); checkUpdate(); }
   setInterval(() => { checkReminders(); checkTimers(); if (!dragId) render(); }, 20e3); // don't redraw mid-drag
 });

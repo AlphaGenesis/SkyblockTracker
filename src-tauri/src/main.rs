@@ -52,6 +52,8 @@ fn open_kofi() -> Result<(), String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![load_data, save_data, data_file, open_data_dir, open_kofi])
         .run(tauri::generate_context!())
         .expect("error while running Skyblock Tracker");
