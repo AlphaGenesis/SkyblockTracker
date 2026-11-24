@@ -24,6 +24,7 @@ const dur = (ms) => { const m = Math.max(1, Math.ceil(ms / 6e4)); const d = Math
 /* ---------- icons ---------- */
 const ic = (d, s = 18, w = 1.8) => `<svg aria-hidden="true" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 const P = {
+  grip: '<circle cx="9" cy="6" r="1.3"/><circle cx="15" cy="6" r="1.3"/><circle cx="9" cy="12" r="1.3"/><circle cx="15" cy="12" r="1.3"/><circle cx="9" cy="18" r="1.3"/><circle cx="15" cy="18" r="1.3"/>',
   dice: '<rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1" fill="currentColor"/><circle cx="15" cy="15" r="1.1" fill="currentColor"/><circle cx="12" cy="12" r="1.1" fill="currentColor"/>',
   download: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
   all: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>',
@@ -98,8 +99,27 @@ let saveBlocked = false;
 let saving = Promise.resolve();
 const EMPTY = () => {
   const p = uid();
-  return { profiles: [{ id: p, name: 'Main' }], activeProfile: p, prefs: { period: 'all', from: '', to: '', catView: 'list', catMetric: 'invested', chart: { style: 'bars', group: 'day', sign: 'all', hidden: [] } }, categories: [], flips: [], timers: [], presets: [], calendars: [{ id: uid(), name: 'Events', color: 'violet', visible: true }], events: [], todos: [], passive: [], dice: [] };
+  return { profiles: [{ id: p, name: 'Main' }], activeProfile: p, prefs: { period: 'all', from: '', to: '', catView: 'list', catMetric: 'invested', chart: { style: 'bars', group: 'day', sign: 'all', hidden: [] }, hyp: { visible: true, types: {}, limit: 5, rem: {} } }, categories: [], flips: [], timers: [], presets: [], calendars: [], events: [], todos: [], passive: [], dice: [] };
 };
+// Time zones. Events and to dos keep the zone they were made in, so they stay at the same real moment.
+// The calendar and to do show everything in the chosen zone (Auto = the PC's). The rest of the UI reads times with the PC's
+// local clock, so "view" times are shifted instants whose local fields read as the chosen zone's wall time.
+const SYS_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const dispTz = () => db.prefs.tz || SYS_TZ;
+const toView = (ms) => L.shiftTz(ms, SYS_TZ, dispTz());
+const fromView = (ms) => L.shiftTz(ms, dispTz(), SYS_TZ);
+const vNow = () => new Date(toView(Date.now()));
+// a wall date + time saved in zone tz, as the same moment's date + time in the chosen zone
+const wallToView = (date, time, tz) => { const v = new Date(toView(L.zonedMs(date, time, tz || SYS_TZ))); return { date: dKey(v), time: hm(v) }; };
+const todoStartMs = (t) => L.zonedMs(t.start.slice(0, 10), t.start.slice(11, 16), t.tz || SYS_TZ);
+const tzLabel = (tz) => { const o = L.tzOffset(tz, Date.now()), a = Math.abs(o); return `${tz.replace(/_/g, ' ')} (UTC${o < 0 ? '−' : '+'}${Math.floor(a / 60)}${a % 60 ? ':' + String(a % 60).padStart(2, '0') : ''})`; };
+let tzList = null; // built once: ~400 zones
+const tzSelect = (style = '') => {
+  tzList = tzList || (Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [SYS_TZ]).map((z) => [z, tzLabel(z)]);
+  const cur = db.prefs.tz || '';
+  return `<select class="in" data-tz aria-label="Time zone" style="${style}"><option value="" ${cur ? '' : 'selected'}>Auto · ${esc(tzLabel(SYS_TZ))}</option>${tzList.map(([z, l]) => `<option value="${z}" ${z === cur ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+};
+
 // Old fixed categories, kept as ids so files from v1.0 still load.
 const LEGACY_CATS = { mayor: ['Mayor', 'gold'], skins: ['Skins', 'violet'], other: ['Other', 'teal'], lowball: ['Lowball', 'orange'] };
 
@@ -112,9 +132,12 @@ function migrate(raw) {
     d.categories = Object.entries(LEGACY_CATS).filter(([k]) => d.flips.some((f) => f.cat === k)).map(([k, [name, color]]) => ({ id: k, name, color, icon: k }));
     d.todos.forEach((t) => { t.shared = false; t.done = t.doneAt ? { [p]: { doneAt: t.doneAt, entryId: t.entryId } } : {}; delete t.doneAt; delete t.entryId; });
   }
+  d.events.forEach((e) => (e.tz = e.tz || SYS_TZ)); // made before time zones existed: they were in the PC's zone
+  d.todos.forEach((t) => (t.tz = t.tz || SYS_TZ));
   if (!byId(d.profiles, d.activeProfile)) d.activeProfile = d.profiles[0].id;
   d.prefs = Object.assign(EMPTY().prefs, d.prefs);
   d.prefs.chart = Object.assign(EMPTY().prefs.chart, d.prefs.chart);
+  d.prefs.hyp = Object.assign({ visible: true, types: {}, limit: 5, rem: {} }, d.prefs.hyp); // Hypixel layer: which events, reminders
   return d;
 }
 
@@ -159,17 +182,55 @@ const catMeta = (id) => {
 // a shared to do has one tick for everyone ('*'); otherwise each profile has its own
 const tickKey = (t) => (t.shared ? '*' : db.activeProfile);
 const tickRec = (t) => (t.done || {})[tickKey(t)];
-const todoNow = (t, now = Date.now()) => todoState({ start: t.start, every: t.every, unit: t.unit, sbYear: t.sbYear, doneAt: tickRec(t)?.doneAt }, now);
+const todoNow = (t, now = Date.now()) => todoState({ start: todoStartMs(t), every: t.every, unit: t.unit, sbYear: t.sbYear, doneAt: tickRec(t)?.doneAt }, now);
 const visibleCals = () => new Set(db.calendars.filter((c) => c.visible).map((c) => c.id));
+// Mayor, minister and election from the public Hypixel API (no key needed). Refreshed at most every 10 minutes.
+const hyp = { data: null, err: '', at: 0, busy: false };
+async function fetchElection(force) {
+  if (hyp.busy || (!force && Date.now() - hyp.at < 10 * 6e4)) return;
+  hyp.busy = true;
+  try {
+    const r = await fetch('https://api.hypixel.net/v2/resources/skyblock/election');
+    const j = await r.json();
+    if (!j || !j.success || !j.mayor || !Number.isInteger(j.mayor.election?.year)) throw new Error(j?.cause || 'unexpected answer (HTTP ' + r.status + ')');
+    hyp.data = j; hyp.err = '';
+  } catch (e) { hyp.err = String(e.message || e); }
+  hyp.at = Date.now(); hyp.busy = false;
+  if (!dragId) render();
+}
+const hypTerm = () => { const m = hyp.data?.mayor; return m ? { mayor: String(m.name), ...L.mayorTerm(m.election.year) } : null; };
+const mcText = (s) => String(s ?? '').replace(/§./g, ''); // drop Minecraft color codes
+const HYP_LONG = 6 * 36e5; // longer than this: not drawn in the week grid (would cover whole days), listed under "Active now"
+const hypOccs = (from, to, ql = '') => { // real instants
+  const H = db.prefs.hyp, out = [];
+  if (!H.visible) return out;
+  for (const he of L.HYP_EVENTS) {
+    if (!H.types[he.key] || (ql && !he.name.toLowerCase().includes(ql))) continue;
+    let list;
+    if (he.hourly || he.cult) { const now = Date.now(); list = L.hypOccurrences(he, now, now + (H.limit + 1) * 3 * 36e5, null).slice(0, H.limit).filter((o) => o.start < to && o.end > from); } // frequent: only the next few
+    else list = L.hypOccurrences(he, from, to, hypTerm());
+    const ev = { id: 'hyp:' + he.key, name: he.name, color: he.color, repeat: true, hyp: true };
+    for (const o of list) out.push({ ev, start: o.start, end: o.end });
+  }
+  return out;
+};
+
 const visibleOccs = (from, to, q = '') => {
   const vis = visibleCals();
   const ql = q.trim().toLowerCase();
   const out = [];
   for (const ev of db.events) {
-    if (!ev.calendars.some((id) => vis.has(id))) continue;
+    if (ev.calendars.length && !ev.calendars.some((id) => vis.has(id))) continue; // in no calendar = always shown
     if (ql && !(ev.name + ' ' + (ev.note || '')).toLowerCase().includes(ql)) continue;
-    for (const o of occurrences(ev, from, to)) out.push({ ev, start: o.start, end: o.end });
+    const rf = fromView(from), rt = fromView(to), r = ev.repeat;
+    let list;
+    if (r) { // only the next N occurrences of a repeating event (5 by default), from now on
+      const step = (r.sbYear ? L.SB_YEAR_MIN : toMin(r.every, r.unit)) * 6e4, now = Date.now(), n = r.show || 5;
+      list = occurrences(ev, now, now + (n + 1) * step + 2 * 864e5).slice(0, n).filter((o) => o.start < rt && o.end > rf);
+    } else list = occurrences(ev, rf, rt);
+    for (const o of list) out.push({ ev, start: toView(o.start), end: toView(o.end) });
   }
+  for (const o of hypOccs(fromView(from), fromView(to), ql)) out.push({ ev: o.ev, start: toView(o.start), end: toView(o.end) });
   return out.sort((a, b) => a.start - b.start);
 };
 
@@ -182,7 +243,7 @@ function sideHtml() {
     const n = k === 'all' ? flips.length : flips.filter((f) => f.cat === k).length;
     return navBtn(ui.view === 'inv' && ui.cat === k, P[icon], label, `<span class="count">${n}</span>`, `data-act="nav" data-view="inv" data-cat="${k}" style="--ink:${catMeta(k).ink}"`);
   };
-  const today = dayStart(new Date());
+  const today = dayStart(vNow());
   const nToday = visibleOccs(today.getTime(), addDays(today, 1).getTime()).length;
   const nDue = db.todos.filter((t) => !todoNow(t).done).length;
   const net = sum(flips.filter((f) => f.sold), (f) => f.pnl);
@@ -313,7 +374,13 @@ function layoutDay(items) {
   // side-by-side columns for overlapping events
   items.sort((a, b) => a.s - b.s || b.e - a.e);
   let cols = [], group = [], groupEnd = -Infinity;
-  const flush = () => { const n = cols.length; group.forEach((i) => (i.n = n)); group = []; cols = []; };
+  // Cascade (each one slightly indented over the previous) keeps every title readable when starts are spread out;
+  // events starting within 25 min of each other would hide a title, so that group goes side by side instead.
+  const flush = () => {
+    const n = cols.length, cascade = group.every((x, i) => !i || x.s - group[i - 1].s >= 25 * 6e4);
+    group.forEach((i) => { i.n = n; i.cascade = cascade; });
+    group = []; cols = [];
+  };
   for (const it of items) {
     if (group.length && it.s >= groupEnd) { flush(); groupEnd = -Infinity; }
     let c = cols.findIndex((end) => end <= it.s);
@@ -324,8 +391,78 @@ function layoutDay(items) {
   return items;
 }
 
+// Left column of the calendar: panels the user can fold and reorder (order and folds are saved).
+const CAL_PANELS = ['mini', 'cals', 'hyp', 'next', 'mayor'];
+const calOrder = () => { const o = (db.prefs.calOrder || []).filter((k) => CAL_PANELS.includes(k)); return o.concat(CAL_PANELS.filter((k) => !o.includes(k))); };
+function calPanel(key, title, tools, body) {
+  const fold = !!db.prefs.calFold?.[key];
+  return `<section class="panel cpanel ${fold ? 'folded' : ''}" data-panel="${key}">
+    <div class="cphead"><span class="grip" draggable="true" title="Drag to move">${ic(P.grip, 16)}</span>
+      <button type="button" class="cptitle" data-act="calFold" data-k="${key}" aria-expanded="${!fold}" title="Click to ${fold ? 'open' : 'fold'} · Alt + ↑/↓ to move"><h2>${title}</h2>${ic(fold ? P.chevDown : P.chevUp, 15, 2)}</button>${tools}</div>
+    ${fold ? '' : body}</section>`;
+}
+
+function hypPanel() {
+  const H = db.prefs.hyp, term = hypTerm(), now = Date.now();
+  const groups = [...new Set(L.HYP_EVENTS.map((e) => e.group))];
+  const item = (e) => {
+    const off = e.mayor && term && term.mayor !== e.mayor;
+    const note = e.mayor ? (term ? (off ? `only when ${e.mayor} is mayor` : `${e.mayor} is mayor now`) : `needs ${e.mayor} as mayor`) : '';
+    return `<label class="hypitem"><input type="checkbox" data-hyp="${e.key}" ${H.types[e.key] ? 'checked' : ''}><span class="dot" style="background:${(COLORS[e.color] || COLORS.violet).ink}"></span><span class="grow" style="min-width:0;display:flex;flex-direction:column"><span class="ell">${esc(e.name)}</span>${note ? `<small class="muted">${note}</small>` : ''}</span></label>`;
+  };
+  const active = hypOccs(now, now + 1).filter((o) => o.end - o.start > HYP_LONG)
+    .map((o) => `<button type="button" class="upnext" data-act="editEvent" data-id="${o.ev.id}"><span class="dot" style="background:${(COLORS[o.ev.color] || COLORS.violet).ink}"></span><span class="grow ell">${esc(o.ev.name)}</span><span class="small muted">ends in ${dur(o.end - now)}</span></button>`).join('');
+  return calPanel('hyp', 'Hypixel', `<input type="checkbox" class="switch" data-hypvis ${H.visible ? 'checked' : ''} aria-label="Show Hypixel events">`, `
+    <span class="small muted">SkyBlock events, worked out from the SkyBlock calendar. Mayor events follow the live mayor.</span>
+    ${groups.map((g) => `<div class="hypgroup"><span class="flabel">${g}</span>${L.HYP_EVENTS.filter((e) => e.group === g).map(item).join('')}
+      ${g === 'Frequent' ? `<div style="display:flex;align-items:center;gap:8px;margin-top:4px">${stepper('hyplimit', H.limit, 'Hourly events shown', 1, 99)}<span class="small muted">next ones of each shown</span></div>` : ''}</div>`).join('')}
+    ${active ? `<span class="flabel">Active now</span>${active}` : ''}`);
+}
+
+function mayorPanel() {
+  fetchElection();
+  const d = hyp.data, now = Date.now();
+  const head = `<button type="button" class="iconbtn" data-act="hypRefresh" aria-label="Refresh from Hypixel" ${hyp.busy ? 'disabled' : ''}>${ic(P.repeat, 15)}</button>`;
+  if (!d) return calPanel('mayor', 'Mayor', head, `<span class="small muted">${hyp.err ? 'Could not reach the Hypixel API: ' + esc(hyp.err) : 'Loading from Hypixel…'}</span>`);
+  const m = d.mayor, term = L.mayorTerm(m.election.year);
+  const perks = (ps) => (Array.isArray(ps) ? ps : []).map((x) => `<div class="perk"><b>${esc(mcText(x.name))}</b><span class="small muted">${esc(mcText(x.description))}</span></div>`).join('');
+  let el = '';
+  const c = d.current;
+  if (c && Array.isArray(c.candidates)) {
+    const total = sum(c.candidates, (x) => +x.votes || 0) || 1;
+    el = `<span class="flabel">Election ${esc(c.year)} · ends in ${dur(L.mayorTerm(c.year - 1).end - now)}</span>
+      ${c.candidates.slice().sort((a, b) => (b.votes || 0) - (a.votes || 0)).map((x) => { const pc = ((+x.votes || 0) / total) * 100; return `<div class="vote"><div style="display:flex;gap:8px"><span class="grow" style="font-weight:600">${esc(mcText(x.name))}</span><span class="small muted">${pc.toFixed(1)}%</span></div><div class="track"><div style="width:${pc}%;background:var(--accent)"></div></div></div>`; }).join('')}`;
+  }
+  return calPanel('mayor', 'Mayor', head, `
+    <div><div style="font-weight:700;font-size:16px">${esc(mcText(m.name))}</div><span class="small muted">In office until Late Spring 27 · ${dur(term.end - now)} left</span></div>
+    ${perks(m.perks)}
+    ${m.minister ? `<span class="flabel">Minister · ${esc(mcText(m.minister.name))}</span>${perks([m.minister.perk])}` : ''}
+    ${el}
+    <span class="small muted">From the Hypixel API · ${hm(new Date(toView(hyp.at)))}</span>`);
+}
+
+// A Hypixel event: what it is, when it comes next, and an optional reminder.
+function hypModal(key) {
+  const he = L.HYP_EVENTS.find((e) => e.key === key), H = db.prefs.hyp, now = Date.now();
+  const next = (he.hourly ? L.hypOccurrences(he, now, now + 6 * 36e5, null) : L.hypOccurrences(he, now - 124 * 36e5, now + 400 * 36e5, hypTerm()).filter((o) => o.end > now)).slice(0, 4);
+  const when = (o) => { const a = new Date(toView(o.start)), b = new Date(toView(o.end)); return `${o.start <= now ? 'Now' : DOWS[(a.getDay() + 6) % 7] + ' ' + shortDate(a) + ' · ' + hm(a)} → ${dKey(a) === dKey(b) ? hm(b) : shortDate(b) + ' ' + hm(b)}`; };
+  const rem = H.rem[key];
+  const form = openModal(`<form novalidate>${dHead(esc(he.name), esc(he.desc))}
+    <div class="dbody">
+      <div><span class="flabel">Next</span><div class="small" style="display:flex;flex-direction:column;gap:3px;margin-top:6px">${next.map((o) => `<span>${when(o)}</span>`).join('') || `<span class="muted">${he.mayor ? `Only when ${he.mayor} is mayor.` : 'Nothing coming up.'}</span>`}</div></div>
+      <label class="field"><span>Reminder</span><select class="in" name="reminder">${[['', 'No reminder'], ['0', 'When it starts'], ['5', '5 minutes before'], ['15', '15 minutes before'], ['60', '1 hour before']].map(([v, l]) => `<option value="${v}" ${String(rem ?? '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <span class="small muted">Times in ${esc(dispTz().replace(/_/g, ' '))}. Hypixel events can't be edited; untick them in the Hypixel list to hide them.</span>
+    </div>${dFoot('Save')}</form>`);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const v = new FormData(form).get('reminder');
+    if (v === '') delete H.rem[key]; else H.rem[key] = Number(v);
+    closeModal(); commit();
+  };
+}
+
 function viewCal() {
-  const now = new Date(), todayK = dKey(now);
+  const now = vNow(), todayK = dKey(now);
   const a = ui.anchor;
   let label, body;
   if (ui.calMode === 'week') {
@@ -337,12 +474,13 @@ function viewCal() {
     const days = [...Array(7)].map((_, i) => addDays(start, i));
     const col = (d) => {
       const from = d.getTime(), to = addDays(d, 1).getTime();
-      const items = layoutDay(occs.filter((o) => o.start < to && o.end > from).map((o) => ({ o, s: Math.max(o.start, from), e: Math.min(o.end, to) })));
+      const items = layoutDay(occs.filter((o) => o.start < to && o.end > from && !(o.ev.hyp && o.end - o.start > HYP_LONG)).map((o) => ({ o, s: Math.max(o.start, from), e: Math.min(o.end, to) })));
       const evs = items.map((it) => {
         const c = COLORS[it.o.ev.color] || COLORS.violet;
         const top = ((it.s - from) / 36e5) * ROW + 1, h = Math.max(20, ((it.e - it.s) / 36e5) * ROW - 3);
-        return `<button type="button" class="ev" data-act="editEvent" data-id="${it.o.ev.id}" style="top:${top}px;height:${h}px;left:calc(${(it.col / it.n) * 100}% + 3px);width:calc(${100 / it.n}% - 6px);background:${c.bg}">
-          <b>${esc(it.o.ev.name)}${it.o.ev.repeat ? ' ' + ic(P.repeat, 10, 2.2) : ''}</b>${h >= 38 ? `<i style="color:${c.ink}">${hm(new Date(it.o.start))} – ${hm(new Date(it.o.end))}</i>` : ''}</button>`;
+        const when = `${hm(new Date(it.o.start))}–${hm(new Date(it.o.end))}`;
+        return `<button type="button" class="ev" data-act="editEvent" data-id="${it.o.ev.id}" title="${esc(it.o.ev.name)} · ${when}" style="top:${top}px;height:${h}px;${it.cascade ? `left:${2 + it.col * 14}px;width:calc(100% - ${4 + it.col * 14}px);z-index:${1 + it.col}` : `left:calc(${(it.col / it.n) * 100}% + 2px);width:calc(${100 / it.n}% - 4px)`};background:linear-gradient(${c.bg}, ${c.bg}), var(--card);box-shadow:inset 3px 0 0 ${c.ink}">
+          <b>${esc(it.o.ev.name)}${it.o.ev.repeat ? ' ' + ic(P.repeat, 10, 2.2) : ''}</b>${h >= 34 ? `<i style="color:${c.ink}">${when}</i>` : ''}</button>`;
       }).join('');
       const isToday = dKey(d) === todayK;
       const nowLine = isToday ? `<div class="now" style="top:${(now.getHours() + now.getMinutes() / 60) * ROW}px"></div>` : '';
@@ -381,13 +519,14 @@ function viewCal() {
       <label><input type="checkbox" data-calvis="${c.id}" ${c.visible ? 'checked' : ''}><span class="dot" style="background:${(COLORS[c.color] || COLORS.violet).ink}"></span><span class="ell grow">${esc(c.name)}</span><span class="small muted">${evCount(c.id)}</span></label>
       <button type="button" class="iconbtn" data-act="editCal" data-id="${c.id}" aria-label="Edit calendar ${esc(c.name)}">${ic(P.edit, 15)}</button></div>`).join('');
 
-  const nowMs = Date.now();
+  const nowMs = now.getTime();
   const next = visibleOccs(nowMs, nowMs + 30 * 864e5, ui.q).filter((o) => o.start >= nowMs).slice(0, 5);
   const when = (o) => { const d = new Date(o.start); return (dKey(d) === todayK ? 'Today' : DOWS[(d.getDay() + 6) % 7] + ' ' + shortDate(d)) + ' · ' + hm(d); };
   const upnext = next.map((o) => `<button type="button" class="upnext" data-act="editEvent" data-id="${o.ev.id}"><span class="dot" style="background:${(COLORS[o.ev.color] || COLORS.violet).ink}"></span><span class="grow" style="min-width:0;display:flex;flex-direction:column;gap:2px"><span class="ell" style="font-weight:500">${esc(o.ev.name)}</span><span class="small muted">${when(o)}</span></span>${o.ev.repeat ? `<span class="muted" title="Repeats">${ic(P.repeat, 15)}</span>` : ''}</button>`).join('');
 
   return `
-  <div class="top"><div><h1>Calendar</h1><p>Tick the calendars you want to see. They stack in the same view.</p></div>
+  <div class="top"><div><h1>Calendar</h1><p>Tick the calendars you want to see. They stack in the same view.</p>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:8px"><span class="small muted">Time zone</span>${tzSelect('width:240px;height:34px;font-size:13px')}</div></div>
     <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px">
       <div style="display:flex;align-items:center;gap:2px;height:44px;padding:0 4px;border-radius:12px;background:var(--card);border:1px solid var(--cardline)">
         <button type="button" class="iconbtn" data-act="calMove" data-d="-1" aria-label="Previous">${ic(P.left, 16, 2)}</button>
@@ -400,11 +539,14 @@ function viewCal() {
       <button type="button" class="btn" data-act="newEvent">${ic(P.plus, 18, 2)}New event</button>
     </div></div>
   <div class="calwrap">
-    <div class="calside">
-      <section class="panel"><h2>${MONTHS_LONG[a.getMonth()]} ${a.getFullYear()}</h2><div class="mini">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((x) => `<span>${x}</span>`).join('')}${mini}</div></section>
-      <section class="panel"><div style="display:flex;align-items:center"><h2 class="grow">Calendars</h2><button type="button" class="iconbtn" data-act="newCal" aria-label="New calendar">${ic(P.plus, 17, 2)}</button></div>
-        <div style="display:flex;flex-direction:column;gap:2px">${cals}</div></section>
-      <section class="panel"><h2>Up next</h2>${upnext || '<span class="small muted">Nothing in the next 30 days.</span>'}</section>
+    <div class="calside" id="calside">${calOrder().map((k) => ({
+      mini: () => calPanel('mini', `${MONTHS_LONG[a.getMonth()]} ${a.getFullYear()}`, '', `<div class="mini">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((x) => `<span>${x}</span>`).join('')}${mini}</div>`),
+      cals: () => calPanel('cals', 'Calendars', `<button type="button" class="iconbtn" data-act="newCal" aria-label="New calendar">${ic(P.plus, 17, 2)}</button>`,
+        `<div style="display:flex;flex-direction:column;gap:2px">${cals || '<span class="small muted">No calendars. Events show up anyway; add one to group events and hide them in one click.</span>'}</div>`),
+      hyp: hypPanel,
+      next: () => calPanel('next', 'Up next', '', upnext || '<span class="small muted">Nothing in the next 30 days.</span>'),
+      mayor: mayorPanel,
+    })[k]()).join('')}
     </div>
     ${body}
   </div>`;
@@ -425,11 +567,11 @@ function viewTodo() {
       <button type="button" class="tick ${st.done ? 'on' : ''}" data-act="tick" data-id="${t.id}" aria-pressed="${st.done}" aria-label="Done: ${esc(t.name)}">${st.done ? ic(P.check, 16, 3) : ''}</button>
       <div class="grow" style="min-width:0;display:flex;flex-direction:column;gap:4px">
         <div style="display:flex;align-items:center;gap:8px;min-width:0"><span class="tname ell" style="font-weight:600;font-size:15px">${esc(t.name)}</span>${t.passive ? `<span class="pill" style="background:${PASSIVE.tint};color:${PASSIVE.ink}">Passive</span>` : ''}${t.shared ? '<span class="pill" style="background:var(--chip);color:var(--nav)">Shared</span>' : ''}</div>
-        <span class="small muted">${t.sbYear ? 'Every Skyblock year (124h)' : `${L.everyText(t.every, t.unit)} · from ${shortDate(t.start)}, ${hm(new Date(t.start))}`}</span></div>
+        <span class="small muted">${t.sbYear ? 'Every Skyblock year (124h)' : `${L.everyText(t.every, t.unit)} · from ${shortDate(new Date(toView(todoStartMs(t))))}, ${hm(new Date(toView(todoStartMs(t))))}`}</span></div>
       <div style="text-align:right;display:flex;flex-direction:column;gap:2px">
         <span class="${st.done ? 'pos' : ''}" style="font-weight:600">${st.done ? doneLabel(t) : 'To do'}</span>
         <span class="small muted">Resets in ${dur(st.next - now)}</span>
-        ${t.passive ? `<span class="small" style="color:${PASSIVE.ink}">${fmt(earned(t.id))} earned</span>` : ''}</div>
+        ${t.passive ? `<button type="button" class="link small" style="color:${PASSIVE.ink};align-self:flex-end" data-act="passiveEdit" data-id="${t.id}" aria-label="Edit what ${esc(t.name)} earned">${fmt(earned(t.id))} earned ${ic(P.edit, 12)}</button>` : ''}</div>
       <button type="button" class="iconbtn" data-act="editTodo" data-id="${t.id}" aria-label="Edit ${esc(t.name)}">${ic(P.edit, 17)}</button>
     </div>`;
   return `
@@ -438,7 +580,7 @@ function viewTodo() {
   <div class="cards">
     <div class="card"><span>To do now</span><div class="big">${due}</div><span class="small muted">of ${items.length} tasks</span></div>
     <div class="card"><span>Done</span><div class="big pos">${items.length - due}</div><span class="small muted">until their next reset</span></div>
-    <div class="card"><span>Passive · last 7 days</span><div class="big" style="color:${PASSIVE.ink}">${fmt(week)}${coin()}</div><span class="small muted">from passive tasks</span></div>
+    <button type="button" class="card tap" data-act="passiveWeek"><span>Passive · last 7 days</span><div class="big" style="color:${PASSIVE.ink}">${fmt(week)}${coin()}</div><span class="small muted">from passive tasks · click to see and edit</span></button>
   </div>
   <div style="display:flex;flex-direction:column;gap:8px">${items.map(row).join('') || '<div class="empty"><b style="font-size:15px">No tasks yet</b><span class="muted">Add a recurring task, like collecting your minions every 12 hours.</span></div>'}</div>`;
 }
@@ -530,6 +672,38 @@ function catChart(rows, view, metric) {
       <div style="flex:1;min-width:160px;display:flex;flex-direction:column;gap:8px">${legend}</div></div>${negNote}`;
 }
 
+let lastStats = null;
+// What a Stats card counts, line by line. Each line opens the flip or dice it comes from.
+function breakdownModal(k) {
+  const S = lastStats, pl = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+  if (k === 'passive') return passiveModal({ from: S.from, to: S.to, sub: S.period });
+  const val = (v, sign = true) => `<b class="num ${sign ? (v > 0 ? 'pos' : v < 0 ? 'neg' : '') : ''}">${sign ? signed(v) : fmt(v)}</b>`;
+  const flipRow = (f, act, sub, v, sign) => ({ act, id: f.id, label: f.name, sub, v: val(v, sign) });
+  const soldSub = (f) => `Sold ${dateLabel(f.soldAt)} · ${fmt(f.cost)} → ${fmt(f.sell)}${f.fees ? ' · fees ' + fmt(f.fees) : ''}`;
+  const by = (key) => (a, b) => b[key].localeCompare(a[key]);
+  const T = {
+    invested: ['Invested', `${pl(S.bought.length, 'flip')} bought`, S.bought.sort(by('bought')).map((f) => flipRow(f, 'editFlip', `Bought ${dateLabel(f.bought)}${f.qty > 1 ? ` · ${f.qty} items` : ''}`, f.cost, false)), fmt(sum(S.bought, (f) => f.cost))],
+    profit: ['Profit', `${pl(S.wins.length, 'winning flip')}`, S.wins.sort(by('soldAt')).map((f) => flipRow(f, 'sell', soldSub(f), f.pnl)), signed(sum(S.wins, (f) => f.pnl))],
+    losses: ['Losses', `${pl(S.losses.length, 'losing flip')}`, S.losses.sort(by('soldAt')).map((f) => flipRow(f, 'sell', soldSub(f), f.pnl)), signed(sum(S.losses, (f) => f.pnl))],
+    winrate: ['Win rate', `${S.wins.length} won out of ${pl(S.closed.length, 'closed flip')}`, S.closed.sort(by('soldAt')).map((f) => flipRow(f, 'sell', (f.pnl > 0 ? 'Won · ' : f.pnl < 0 ? 'Lost · ' : 'Even · ') + soldSub(f), f.pnl)), S.closed.length ? Math.round((S.wins.length / S.closed.length) * 100) + '%' : '—'],
+    open: ['Still open', `${pl(S.open.length, 'flip')} in progress (any purchase date)`, S.open.sort(by('bought')).map((f) => flipRow(f, 'editFlip', `Bought ${dateLabel(f.bought)}${f.qty > 1 ? ` · ${f.qty} items` : ''}`, f.cost, false)), fmt(sum(S.open, (f) => f.cost))],
+    dice: ['Dice', `${S.diceDone.length} finished dice`, S.diceDone.map((d) => ({ act: 'diceDrop', id: d.id, label: L.DICE[d.type].name, sub: `${d.end.kind === 'six' ? 'Rolled a 6' : 'Archfiend Dye ' + fmt(d.end.dye)} · ${d.rolls} rolls · paid ${fmt(d.paid)} · ${dateLabel(d.end.at)}`, v: val(d.pnl) })), signed(sum(S.diceDone, (d) => d.pnl))],
+  };
+  if (k === 'net') {
+    const part = (key, label, sub, v) => ({ act: 'breakdown', k: key, label, sub, v: val(v) });
+    const pass = sum(S.pass, (x) => x.amount), dice = sum(S.diceDone, (d) => d.pnl), win = sum(S.wins, (f) => f.pnl), loss = sum(S.losses, (f) => f.pnl);
+    T.net = ['Net result', 'Everything that came back, minus what was lost', [
+      part('profit', 'Profit', pl(S.wins.length, 'winning flip'), win), part('losses', 'Losses', pl(S.losses.length, 'losing flip'), loss),
+      part('passive', 'Passive', pl(S.pass.length, 'completion'), pass), part('dice', 'Dice', `${S.diceDone.length} finished`, dice)], signed(win + loss + pass + dice)];
+  }
+  const [title, sub, rows, total] = T[k];
+  openModal(`<form novalidate>${dHead(title, esc(sub) + ' · ' + esc(S.period))}
+    <div class="dbody">
+      <div class="bklist">${rows.map((r) => `<button type="button" class="bkrow" data-act="${r.act}" ${r.id ? `data-id="${r.id}"` : `data-k="${r.k}"`}><span class="grow" style="min-width:0;display:flex;flex-direction:column;gap:2px"><span class="ell" style="font-weight:600">${esc(r.label)}</span><span class="small muted ell">${r.sub}</span></span>${r.v}${ic(P.right, 14, 2)}</button>`).join('') || '<span class="small muted">Nothing counted in this period.</span>'}</div>
+      <div class="box" style="flex-direction:row;align-items:center"><span class="grow muted">Total</span><b class="big">${total}</b></div>
+    </div><div class="dfoot"><span class="small muted grow">Click a line to open it.</span><button type="button" class="btn" data-act="close">Close</button></div></form>`, 'wide');
+}
+
 function viewStats() {
   const pr = db.prefs, today = dayStart(new Date()), tomorrow = addDays(today, 1).getTime();
   const ms = (s) => new Date(s).getTime();
@@ -556,6 +730,7 @@ function viewStats() {
   const invested = sum(bought, (f) => f.cost);
   const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
   const pct = (x) => (x >= 0 ? '+' : '−') + Math.abs(x).toFixed(1) + '%';
+  lastStats = { from, to, bought, closed, wins, losses, pass, diceDone, open, period: `${dateLabel(new Date(from))} – ${dateLabel(new Date(to - 864e5))}` };
 
   // realized chart: closed flips by category + passive, with the chart filters
   const c = pr.chart, hidden = new Set(c.hidden);
@@ -607,14 +782,14 @@ function viewStats() {
       ${pr.period === 'custom' ? `<div style="display:flex;align-items:center;gap:8px"><input class="in" type="date" data-pref="from" value="${esc(dKey(new Date(from)))}" aria-label="From" style="width:auto;height:36px"><span class="muted">→</span><input class="in" type="date" data-pref="to" value="${esc(dKey(new Date(to - 864e5)))}" aria-label="To" style="width:auto;height:36px"></div>` : ''}
     </div></div>
   <div class="cards">
-    <div class="card"><span>Invested</span><div class="big">${fmt(invested)}${coin()}</div><span class="small muted">${plural(bought.length, 'flip')}</span></div>
-    <div class="card"><span>Profit</span><div class="big pos">${signed(profit)}</div><span class="small muted">${plural(wins.length, 'winning flip')}</span></div>
-    <div class="card"><span>Losses</span><div class="big neg">${signed(loss)}</div><span class="small muted">${plural(losses.length, 'losing flip')}</span></div>
-    <div class="card"><span>Passive</span><div class="big" style="color:${PASSIVE.ink}">${signed(passive)}</div><span class="small muted">${plural(pass.length, 'completion')}</span></div>
-    <div class="card"><span>Dice</span><div class="big ${diceRes > 0 ? 'pos' : diceRes < 0 ? 'neg' : ''}">${signed(diceRes)}</div><span class="small muted">${diceDone.length} finished</span></div>
-    <div class="card"><span>Net result</span><div class="big ${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${signed(net)}</div><span class="small muted">${closed.length ? 'ROI ' + pct(roi) + ' on closed' : 'flips + passive + dice'}</span></div>
-    <div class="card"><span>Win rate</span><div class="big">${closed.length ? Math.round((wins.length / closed.length) * 100) + '%' : '—'}</div><span class="small muted">${wins.length} of ${closed.length} closed</span></div>
-    <div class="card"><span>Still open</span><div class="big">${fmt(sum(open, (f) => f.cost))}</div><span class="small muted">${plural(open.length, 'flip')} in progress</span></div>
+    <button type="button" class="card tap" data-act="breakdown" data-k="invested"><span>Invested</span><div class="big">${fmt(invested)}${coin()}</div><span class="small muted">${plural(bought.length, 'flip')}</span></button>
+    <button type="button" class="card tap" data-act="breakdown" data-k="profit"><span>Profit</span><div class="big pos">${signed(profit)}</div><span class="small muted">${plural(wins.length, 'winning flip')}</span></button>
+    <button type="button" class="card tap" data-act="breakdown" data-k="losses"><span>Losses</span><div class="big neg">${signed(loss)}</div><span class="small muted">${plural(losses.length, 'losing flip')}</span></button>
+    <button type="button" class="card tap" data-act="breakdown" data-k="passive"><span>Passive</span><div class="big" style="color:${PASSIVE.ink}">${signed(passive)}</div><span class="small muted">${plural(pass.length, 'completion')}</span></button>
+    <button type="button" class="card tap" data-act="breakdown" data-k="dice"><span>Dice</span><div class="big ${diceRes > 0 ? 'pos' : diceRes < 0 ? 'neg' : ''}">${signed(diceRes)}</div><span class="small muted">${diceDone.length} finished</span></button>
+    <button type="button" class="card tap" data-act="breakdown" data-k="net"><span>Net result</span><div class="big ${net > 0 ? 'pos' : net < 0 ? 'neg' : ''}">${signed(net)}</div><span class="small muted">${closed.length ? 'ROI ' + pct(roi) + ' on closed' : 'flips + passive + dice'}</span></button>
+    <button type="button" class="card tap" data-act="breakdown" data-k="winrate"><span>Win rate</span><div class="big">${closed.length ? Math.round((wins.length / closed.length) * 100) + '%' : '—'}</div><span class="small muted">${wins.length} of ${closed.length} closed</span></button>
+    <button type="button" class="card tap" data-act="breakdown" data-k="open"><span>Still open</span><div class="big">${fmt(sum(open, (f) => f.cost))}</div><span class="small muted">${plural(open.length, 'flip')} in progress</span></button>
   </div>
   <div class="split">
     <section class="panel wide"><div style="display:flex;align-items:baseline;gap:12px"><h2 class="grow">${chartTitle}</h2><span class="small muted">${bTitle(bks[0].start, c.group)} – ${shortDate(new Date(to - 864e5))}</span></div>
@@ -756,7 +931,7 @@ function customModal(preset) {
   const form = openModal(`<form novalidate>${dHead(isPreset ? 'Edit preset' : 'Custom timer', isPreset ? 'Click the tile to start this timer.' : 'Any name and duration. Save it as a preset to start it in one click next time.')}
     <div class="dbody">
       <label class="field"><span>Name</span><input class="in" name="name" value="${esc(p.name)}" placeholder="e.g. Kuudra key" autofocus></label>
-      ${dhm(p.min, 'minutes', 'Duration')}
+      ${dhm(p.min, 'Duration')}
       ${isPreset ? '' : `<label class="field"><span>Started</span><input class="in" type="datetime-local" name="start" value="${localISO(new Date())}"></label>`}
       <div class="field"><span class="flabel">Color</span>${swatches(p.color)}</div>
       <div class="field"><span class="flabel">Icon</span><div class="chips icons" role="radiogroup" aria-label="Icon">${icons.map((k) => `<label title="${k}"><input type="radio" name="icon" value="${k}" ${k === p.icon ? 'checked' : ''} aria-label="${k}"><span>${ic(P[k], 20)}</span></label>`).join('')}</div></div>
@@ -771,7 +946,7 @@ function customModal(preset) {
     e.preventDefault();
     const fd = new FormData(form), name = fd.get('name').trim(), min = readMin(fd);
     if (!name) return setErr(form, 'Give the timer a name.');
-    if (min < 1) return setErr(form, 'The duration must be at least 1 minute.');
+    if (min < 1) return setErr(form, 'Enter a duration of at least 1 minute, like 45m, 2h30 or 1d.');
     const look = { name, min, icon: fd.get('icon'), color: fd.get('color') };
     if (isPreset) Object.assign(byId(db.presets, p.id), look);
     else {
@@ -827,6 +1002,10 @@ function viewSettings() {
     <span class="small muted">Everything is saved in one JSON file. To edit it by hand: open the folder, edit <b>data.json</b>, save it, then click Reload. Don't change anything in the app while you edit, or the app will overwrite your edits. A copy of the previous version is kept as data.json.bak.</span>
     <code style="padding:10px 12px;border-radius:10px;background:var(--field);border:1px solid var(--fieldline);user-select:text;word-break:break-all">${esc(dataPath)}</code>
     <div style="display:flex;gap:10px;flex-wrap:wrap"><button type="button" class="btn ghost" data-act="openData" ${T ? '' : 'disabled'}>${ic(P.folder, 17)}Open data folder</button><button type="button" class="btn ghost" data-act="reloadData">Reload from file</button></div>
+  </section>
+  <section class="panel"><h2>Time zone</h2>
+    <span class="small muted">The calendar and To Do show their times in this zone. Auto follows your PC. Events keep the real moment they happen, so they move by themselves when you change zone.</span>
+    ${tzSelect('max-width:420px')}
   </section>
   <section class="panel"><h2>Selling</h2>
     <span class="small muted">Used to calculate fees when you sell. AH fees are fixed by the game (BIN listing fee 1% / 2% / 2.5% + 1% claim tax).</span>
@@ -948,9 +1127,10 @@ const PLACEHOLDER = { dice: 'Search…', inv: 'Search items or notes…', histor
 function render() {
   $('#side').innerHTML = sideHtml();
   const main = $('#view');
-  const st = main.scrollTop, ws = $('#wscroll')?.scrollTop;
+  const st = main.scrollTop, ws = $('#wscroll')?.scrollTop, cs = $('#calside')?.scrollTop;
   main.innerHTML = VIEWS[ui.view]();
   main.scrollTop = st;
+  if (cs && $('#calside')) $('#calside').scrollTop = cs;
   const w = $('#wscroll');
   if (w) w.scrollTop = ws ?? Math.max(0, new Date().getHours() - 2) * ROW;
   $('#q').placeholder = PLACEHOLDER[ui.view];
@@ -983,27 +1163,22 @@ const dFoot = (saveLabel, del) => `<div class="dfoot">${del ? `<button type="but
 const radios = (name, opts, val, label) => `<div class="chips" role="radiogroup" aria-label="${label}">${opts.map(([v, l, dot]) => `<label><input type="radio" name="${name}" value="${v}" ${v === val ? 'checked' : ''}><span>${dot ? `<span class="dot" style="background:${dot}"></span>` : ''}${l}</span></label>`).join('')}</div>`;
 const swatches = (val) => `<div class="chips sw" role="radiogroup" aria-label="Color">${Object.entries(COLORS).map(([k, c]) => `<label title="${c.label}"><input type="radio" name="color" value="${k}" ${k === val ? 'checked' : ''} aria-label="${c.label}"><span><span class="dot" style="width:18px;height:18px;background:${c.ink}"></span></span></label>`).join('')}</div>`;
 const stepper = (name, val, label, min = 1, max = 999) => `<div class="stepper" role="group" aria-label="${label}"><button type="button" data-step="-1" aria-label="Decrease ${label}">−</button><input name="${name}" type="number" min="${min}" max="${max}" value="${val}" aria-label="${label}"><button type="button" data-step="1" aria-label="Increase ${label}">+</button></div>`;
-// interval picker: days / hours / minutes, stored as total minutes
-const dhm = (every, unit, label = 'Every') => {
-  const s = L.splitMin(Math.round((every * L.UNIT_MS[unit]) / 6e4));
-  return `<div class="dhm" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="flabel">${label}</span>
-    ${stepper('ed', s.d, 'Days', 0)}<span class="small muted">d</span>${stepper('eh', s.h, 'Hours', 0, 23)}<span class="small muted">h</span>${stepper('em', s.m, 'Minutes', 0, 59)}<span class="small muted">min</span></div>`;
-};
+// duration picker: one field like "1d 2h 30m", stored as total minutes
+const toMin = (every, unit) => Math.round((every * L.UNIT_MS[unit]) / 6e4);
+const dhm = (min, label = 'Every', name = 'every', hint = 'Type it any way: 90m, 2h30, 1d 4h. It tidies itself up.') => `<div class="field"><label class="flabel" for="f-${name}">${label}</label>
+    <input class="in dhmin" id="f-${name}" name="${name}" value="${L.fmtDhm(min)}" placeholder="e.g. 1d 2h 30m" style="max-width:220px"><span class="small muted">${hint}</span></div>`;
 const sbBox = (on) => `<div class="chips"><label><input type="checkbox" name="sby" ${on ? 'checked' : ''}><span>${ic(P.star, 16)}Every Skyblock year<small class="muted">· 124h</small></span></label></div>`;
 // "Every Skyblock year" fills and locks the start and the interval
 function sbToggle(form, isEvent) {
   const el = form.elements, on = el.sby.checked;
-  ['ed', 'eh', 'em', 'start'].concat(isEvent ? ['date'] : []).forEach((n) => (el[n].readOnly = on));
-  form.querySelectorAll('.dhm [data-step]').forEach((b) => (b.disabled = on));
+  ['every', 'start'].concat(isEvent ? ['date'] : []).forEach((n) => (el[n].readOnly = on));
   if (!on) return;
-  const s = L.splitMin(L.SB_YEAR_MIN), a = new Date(L.SB_YEAR_ANCHOR);
-  el.ed.value = s.d; el.eh.value = s.h; el.em.value = s.m;
+  const a = new Date(toView(L.SB_YEAR_ANCHOR));
+  el.every.value = L.fmtDhm(L.SB_YEAR_MIN);
   if (!isEvent) { el.start.value = localISO(a); return; }
-  let len = (new Date('2000-01-01T' + el.end.value) - new Date('2000-01-01T' + el.start.value)) / 6e4;
-  if (!(len > 0)) len = 60; // keep the event's length, default 1h
-  el.date.value = dKey(a); el.start.value = hm(a); el.end.value = hm(new Date(a.getTime() + len * 6e4));
+  el.date.value = dKey(a); el.start.value = hm(a);
 }
-const readMin = (fd) => (parseInt(fd.get('ed'), 10) || 0) * 1440 + (parseInt(fd.get('eh'), 10) || 0) * 60 + (parseInt(fd.get('em'), 10) || 0);
+const readMin = (fd, name = 'every') => L.parseDhm(fd.get(name)) ?? 0; // unreadable counts as 0, which every form rejects
 const intOf = (v, min = 1) => Math.max(min, parseInt(v, 10) || min);
 const setErr = (form, msg) => { form.querySelector('.err').textContent = msg; };
 
@@ -1352,36 +1527,39 @@ function readEvent(form) {
   const fd = new FormData(form);
   return {
     name: fd.get('name').trim(), color: fd.get('color'), calendars: fd.getAll('cal'),
-    date: fd.get('date'), start: fd.get('start'), end: fd.get('end'),
-    repeat: fd.get('rep') ? { sbYear: !!fd.get('sby'), every: fd.get('sby') ? L.SB_YEAR_MIN : readMin(fd), unit: 'minutes', end: fd.get('ends'), count: intOf(fd.get('count')), until: fd.get('until') } : null,
+    date: fd.get('date'), start: fd.get('start'), dur: readMin(fd, 'dur'), tz: dispTz(),
+    repeat: fd.get('rep') ? { sbYear: !!fd.get('sby'), every: fd.get('sby') ? L.SB_YEAR_MIN : readMin(fd), unit: 'minutes', end: fd.get('ends'), count: intOf(fd.get('count')), until: fd.get('until'), show: Math.min(999, intOf(fd.get('show'))) } : null,
     reminder: fd.get('reminder') === '' ? null : Number(fd.get('reminder')), note: fd.get('note').trim(),
   };
 }
 function eventModal(ev, preset = {}) {
   const isEdit = !!ev;
   const vis = db.calendars.filter((c) => c.visible);
-  ev = ev || Object.assign({ name: '', color: 'violet', calendars: [(vis[0] || db.calendars[0]).id], date: dKey(new Date()), start: '21:00', end: '21:30', repeat: null, reminder: 15, note: '' }, preset);
+  ev = ev || Object.assign({ name: '', color: 'violet', calendars: vis[0] ? [vis[0].id] : [], date: dKey(vNow()), start: '21:00', dur: 30, repeat: null, reminder: 15, note: '', tz: dispTz() }, preset);
+  const w = wallToView(ev.date, ev.start, ev.tz);
+  const dur = L.eventMin(ev);
   const r = ev.repeat || { every: 1, unit: 'weeks', end: 'never', count: 5, until: '' };
   const form = openModal(`<form novalidate>${dHead(isEdit ? 'Edit event' : 'New event', isEdit ? 'Changes apply to this event and all its repeats.' : 'Add an event to one or more calendars.')}
     <div class="dbody">
       <label class="field"><span>Event name</span><input class="in" name="name" value="${esc(ev.name)}" placeholder="e.g. Dark Auction" autofocus></label>
       <div class="field"><span class="flabel">Color</span>${swatches(ev.color)}</div>
-      <div class="field"><span class="flabel">Calendars</span><div class="chips" role="group" aria-label="Calendars">${db.calendars.map((c) => `<label><input type="checkbox" name="cal" value="${c.id}" ${ev.calendars.includes(c.id) ? 'checked' : ''}><span><span class="dot" style="background:${(COLORS[c.color] || COLORS.violet).ink}"></span>${esc(c.name)}</span></label>`).join('')}</div></div>
-      <div class="cols">
-        <label class="field"><span>Date</span><input class="in" type="date" name="date" value="${esc(ev.date)}"></label>
-        <label class="field"><span>Starts</span><input class="in" type="time" name="start" value="${esc(ev.start)}"></label>
-        <label class="field"><span>Ends</span><input class="in" type="time" name="end" value="${esc(ev.end)}"></label>
-      </div>
+      ${db.calendars.length ? `<div class="field"><span class="flabel">Calendars <small class="muted">· optional, an event in no calendar is always shown</small></span><div class="chips" role="group" aria-label="Calendars">${db.calendars.map((c) => `<label><input type="checkbox" name="cal" value="${c.id}" ${ev.calendars.includes(c.id) ? 'checked' : ''}><span><span class="dot" style="background:${(COLORS[c.color] || COLORS.violet).ink}"></span>${esc(c.name)}</span></label>`).join('')}</div></div>` : ''}
       <div class="box">
         <div class="switchrow"><div class="grow"><label for="rep" style="font-weight:500">Repeat</label><div class="small muted">Adds this event again at a fixed interval</div></div><input type="checkbox" class="switch" id="rep" name="rep" ${ev.repeat ? 'checked' : ''}></div>
         <div class="rep-opts" style="flex-direction:column;gap:14px">
-          ${sbBox(r.sbYear)}${dhm(r.every, r.unit)}
+          ${sbBox(r.sbYear)}${dhm(toMin(r.every, r.unit), 'Every', 'every', 'Counted from one start to the next. Type it any way: 90m, 2h30, 1d 4h.')}
+          <div class="field"><span class="flabel">Show in the calendar</span><div style="display:flex;align-items:center;gap:10px">${stepper('show', r.show || 5, 'Occurrences shown', 1, 999)}<span class="small muted">next occurrences at a time</span></div></div>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span class="flabel">Ends</span>${radios('ends', [['never', 'Never'], ['date', 'On a date'], ['after', 'After']], r.end, 'Repeat ends')}
             <input class="in" type="date" name="until" value="${esc(r.until)}" aria-label="End date" style="width:auto">
             <input class="in" type="number" name="count" min="1" value="${r.count}" aria-label="Number of times" style="width:90px"><span class="small muted">times</span></div>
           <div><span class="flabel">Next occurrences</span><div id="nextocc" class="small muted" style="display:flex;flex-direction:column;gap:2px;margin-top:6px"></div></div>
         </div>
       </div>
+      <div class="cols">
+        <label class="field"><span>Date</span><input class="in" type="date" name="date" value="${esc(w.date)}"></label>
+        <label class="field"><span>Starts <small>· ${esc(dispTz().replace(/_/g, ' '))}</small></span><input class="in" type="time" name="start" value="${esc(w.time)}"></label>
+      </div>
+      ${dhm(dur, 'Duration', 'dur', 'How long it lasts from the start time: 30m, 1h, 2h30…')}
       <div class="cols">
         <label class="field"><span>Reminder</span><select class="in" name="reminder">${[['', 'No reminder'], ['0', 'When it starts'], ['5', '5 minutes before'], ['15', '15 minutes before'], ['60', '1 hour before']].map(([v, l]) => `<option value="${v}" ${String(ev.reminder ?? '') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label class="field"><span>Note <small>· optional</small></span><input class="in" name="note" value="${esc(ev.note)}"></label>
@@ -1392,11 +1570,11 @@ function eventModal(ev, preset = {}) {
   if (r.sbYear) sbToggle(form, true);
   const update = () => {
     const e = readEvent(form);
-    if (!e.repeat || !e.date || !e.start || !e.end) return;
-    const from = new Date(e.date + 'T' + e.start).getTime();
+    if (!e.repeat || !e.date || !e.start) return;
+    const from = L.zonedMs(e.date, e.start, e.tz);
     const list = occurrences(e, from, from + 400 * 864e5).slice(0, 6);
     const more = e.repeat.end === 'after' && list.length >= e.repeat.count ? 'then stops' : e.repeat.end === 'date' ? (e.repeat.until ? 'until ' + dateLabel(e.repeat.until + 'T00:00') : '') : 'and so on…';
-    $('#nextocc').innerHTML = list.map((o) => { const d = new Date(o.start); return `<span>${DOWS[(d.getDay() + 6) % 7]} ${shortDate(d)} · ${hm(d)}</span>`; }).join('') + `<span>${more}</span>`;
+    $('#nextocc').innerHTML = list.map((o) => { const d = new Date(toView(o.start)); return `<span>${DOWS[(d.getDay() + 6) % 7]} ${shortDate(d)} · ${hm(d)}</span>`; }).join('') + `<span>${more}</span>`;
   };
   form.addEventListener('input', update);
   form.addEventListener('change', update);
@@ -1408,11 +1586,11 @@ function eventModal(ev, preset = {}) {
     e.preventDefault();
     const d = readEvent(form);
     if (!d.name) return setErr(form, 'Give the event a name.');
-    if (!d.calendars.length) return setErr(form, 'Pick at least one calendar.');
-    if (!d.date || !d.start || !d.end) return setErr(form, 'Pick a date, a start time and an end time.');
-    if (d.repeat && d.repeat.every < 1) return setErr(form, 'The repeat interval must be at least 1 minute.');
+    if (!d.date || !d.start) return setErr(form, 'Pick a date and a start time.');
+    if (d.dur < 1) return setErr(form, 'Enter a duration of at least 1 minute, like 30m or 2h.');
+    if (d.repeat && d.repeat.every < 1) return setErr(form, 'Enter a repeat interval of at least 1 minute, like 3h or 1d.');
     if (d.repeat && d.repeat.end === 'date' && !d.repeat.until) return setErr(form, 'Pick the date the repeat ends.');
-    if (isEdit) Object.assign(byId(db.events, ev.id), d);
+    if (isEdit) { const o = byId(db.events, ev.id); delete o.end; Object.assign(o, d); }
     else db.events.push(Object.assign({ id: uid() }, d));
     closeModal(); commit();
   };
@@ -1427,12 +1605,16 @@ function calModal(c) {
       <label class="field"><span>Name</span><input class="in" name="name" value="${esc(c.name)}" placeholder="e.g. Mayor events" autofocus></label>
       <div class="field"><span class="flabel">Color</span>${swatches(c.color)}</div>
       <span class="err" role="alert"></span>
-    </div>${dFoot(isEdit ? 'Save changes' : 'Add calendar', isEdit && db.calendars.length > 1 && 'Delete')}</form>`);
+    </div>${dFoot(isEdit ? 'Save changes' : 'Add calendar', isEdit && 'Delete')}</form>`);
   form.querySelector('[data-del]')?.addEventListener('click', () => {
     const only = db.events.filter((e) => e.calendars.length === 1 && e.calendars[0] === c.id).length;
     if (!confirm(`Delete the calendar "${c.name}"?` + (only ? `\n\n${only} event(s) that are only in this calendar will be deleted too.` : ''))) return;
     db.calendars = db.calendars.filter((x) => x.id !== c.id);
-    db.events = db.events.filter((e) => (e.calendars = e.calendars.filter((id) => id !== c.id)).length);
+    db.events = db.events.filter((e) => {
+      const had = e.calendars.includes(c.id);
+      e.calendars = e.calendars.filter((id) => id !== c.id);
+      return !had || e.calendars.length; // events that were only in this calendar go with it; events in no calendar stay
+    });
     closeModal(); commit();
   });
   form.onsubmit = (e) => {
@@ -1447,13 +1629,14 @@ function calModal(c) {
 
 function todoModal(t) {
   const isEdit = !!t;
-  const start = new Date(); start.setMinutes(0, 0, 0);
-  t = t || { name: '', start: localISO(start), every: 1, unit: 'days', passive: false, shared: false };
+  const start = vNow(); start.setMinutes(0, 0, 0);
+  t = t || { name: '', start: localISO(start), every: 1, unit: 'days', passive: false, shared: false, tz: dispTz() };
+  const tw = wallToView(t.start.slice(0, 10), t.start.slice(11, 16), t.tz);
   const form = openModal(`<form novalidate>${dHead(isEdit ? 'Edit to do' : 'New to do', 'It comes back as "to do" every time the interval passes.')}
     <div class="dbody">
       <label class="field"><span>Task</span><input class="in" name="name" value="${esc(t.name)}" placeholder="e.g. Collect minions" autofocus></label>
-      <label class="field"><span>First reset</span><input class="in" type="datetime-local" name="start" value="${esc(t.start)}"><span class="small muted">Resets at this time, then again after every interval.</span></label>
-      ${sbBox(t.sbYear)}${dhm(t.every, t.unit)}
+      ${sbBox(t.sbYear)}${dhm(toMin(t.every, t.unit), 'Resets every')}
+      <label class="field"><span>First reset</span><input class="in" type="datetime-local" name="start" value="${esc(tw.date + 'T' + tw.time)}"><span class="small muted">Resets at this time, then again after every interval.</span></label>
       <div class="box"><div class="switchrow"><div class="grow"><label for="passive" style="font-weight:500">Passive money</label><div class="small muted">When you tick it, you enter how much you earned. It goes to Stats under Passive.</div></div><input type="checkbox" class="switch" id="passive" name="passive" ${t.passive ? 'checked' : ''}></div></div>
       <div class="box"><div class="switchrow"><div class="grow"><label for="shared" style="font-weight:500">Shared between profiles</label><div class="small muted">On: one tick for all profiles, and the money goes to the profile that claims it. Off: every profile ticks it on its own.</div></div><input type="checkbox" class="switch" id="shared" name="shared" ${t.shared ? 'checked' : ''}></div></div>
       <span class="err" role="alert"></span>
@@ -1470,8 +1653,8 @@ function todoModal(t) {
     if (!name) return setErr(form, 'Give the task a name.');
     if (!fd.get('start')) return setErr(form, 'Pick when it first resets.');
     const sby = !!fd.get('sby');
-    if (!sby && readMin(fd) < 1) return setErr(form, 'The interval must be at least 1 minute.');
-    const d = { name, sbYear: sby, start: sby ? localISO(new Date(L.SB_YEAR_ANCHOR)) : fd.get('start'), every: sby ? L.SB_YEAR_MIN : readMin(fd), unit: 'minutes', passive: !!fd.get('passive'), shared: !!fd.get('shared') };
+    if (!sby && readMin(fd) < 1) return setErr(form, 'Enter an interval of at least 1 minute, like 30m, 12h or 1d.');
+    const d = { name, tz: dispTz(), sbYear: sby, start: sby ? localISO(new Date(toView(L.SB_YEAR_ANCHOR))) : fd.get('start'), every: sby ? L.SB_YEAR_MIN : readMin(fd), unit: 'minutes', passive: !!fd.get('passive'), shared: !!fd.get('shared') };
     if (isEdit) {
       const cur = byId(db.todos, t.id);
       if (cur.shared !== d.shared) cur.done = {}; // ticks are keyed differently once sharing changes
@@ -1479,6 +1662,66 @@ function todoModal(t) {
     } else db.todos.push(Object.assign({ id: uid(), done: {} }, d));
     closeModal(); commit();
   };
+}
+
+// Every amount a passive to do earned for this profile: edit, delete, or add one you forgot to log.
+// opts: { todo } for one to do, or { from, to, sub } for a time window over every to do
+function passiveModal(opts) {
+  const t = opts.todo, ms = (x) => new Date(x.at).getTime();
+  const rows = myPassive().filter((x) => (!t || x.todoId === t.id) && (opts.from == null || ms(x) >= opts.from) && (opts.to == null || ms(x) < opts.to)).sort((a, b) => b.at.localeCompare(a.at));
+  const shown = new Set(rows.map((x) => x.id));
+  const todos = db.todos.filter((x) => x.passive);
+  const todoPick = (id) => `<select class="in" name="todo_${id}" aria-label="To do" style="width:170px">${todos.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>`;
+  const row = (x, id) => `<div class="prow" data-pid="${id}" style="display:flex;gap:8px;align-items:center">
+      ${t ? '' : x.todoId ? `<span class="ell" style="width:170px;font-weight:500" title="${esc(x.name)}">${esc((byId(db.todos, x.todoId) || x).name)}</span>` : todoPick(id)}
+      <input class="in" type="datetime-local" name="at_${id}" value="${esc(localISO(new Date(x.at)))}" aria-label="Date" style="flex:1">
+      <input class="in" name="amt_${id}" value="${esc(toShort(x.amount))}" placeholder="e.g. 12m" aria-label="Amount" style="width:130px">
+      <button type="button" class="iconbtn" data-delrow aria-label="Delete this one">${ic(P.trash, 16)}</button></div>`;
+  const form = openModal(`<form novalidate>${dHead('Passive income', esc(t ? t.name : opts.sub) + ' · ' + esc(profileName(db.activeProfile)))}
+    <div class="dbody">
+      <div id="prows" style="display:flex;flex-direction:column;gap:8px">${rows.map((x) => row(x, x.id)).join('')}</div>
+      <span class="small muted" id="pempty" ${rows.length ? 'hidden' : ''}>Nothing logged yet.</span>
+      ${t || todos.length ? `<div><button type="button" class="btn ghost sm" data-addrow>${ic(P.plus, 16, 2)}Add one</button></div>` : ''}
+      <div class="box" style="flex-direction:row;align-items:center"><span class="grow muted">Total</span><b class="big" id="ptot" style="color:${PASSIVE.ink}"></b></div>
+      <span class="err" role="alert"></span>
+    </div>${dFoot('Save')}</form>`, t ? '' : 'wide');
+  let n = 0;
+  const live = () => [...form.querySelectorAll('.prow')].map((r) => r.dataset.pid);
+  const update = () => {
+    const fd = new FormData(form);
+    $('#ptot').textContent = fmt(sum(live(), (id) => parse(fd.get('amt_' + id)) || 0));
+    $('#pempty').hidden = live().length > 0;
+  };
+  form.addEventListener('input', (e) => {
+    const r = e.target.closest('.prow');
+    if (r) { r.querySelectorAll('input').forEach((i) => i.classList.remove('bad')); if (!form.querySelector('.prow .bad')) setErr(form, ''); }
+    update();
+  });
+  form.addEventListener('click', (e) => {
+    if (e.target.closest('[data-delrow]')) { e.target.closest('.prow').remove(); update(); }
+    if (e.target.closest('[data-addrow]')) {
+      $('#prows').insertAdjacentHTML('afterbegin', row({ at: new Date().toISOString(), amount: null }, '_n' + n++));
+      form.querySelector('.prow input[name^=amt_]').focus(); update();
+    }
+  });
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(form), ids = live();
+    const bad = ids.filter((id) => parse(fd.get('amt_' + id)) == null || !fd.get('at_' + id));
+    form.querySelectorAll('.prow input').forEach((i) => i.classList.remove('bad'));
+    bad.forEach((id) => form.querySelectorAll(`[data-pid="${id}"] input`).forEach((i) => i.classList.add('bad')));
+    if (bad.length) return setErr(form, 'Each line needs a date and an amount, like 12m (0 is fine).');
+    const keep = new Set(ids);
+    db.passive = db.passive.filter((x) => !shown.has(x.id) || keep.has(x.id)); // only the lines this window listed can be deleted
+    for (const id of ids) {
+      const data = { amount: parse(fd.get('amt_' + id)), at: new Date(fd.get('at_' + id)).toISOString() };
+      const td = t || byId(db.todos, fd.get('todo_' + id));
+      if (id.startsWith('_n')) db.passive.push({ id: uid(), profileId: db.activeProfile, todoId: td.id, name: td.name, ...data });
+      else Object.assign(byId(db.passive, id), data);
+    }
+    closeModal(); commit();
+  };
+  update();
 }
 
 function markDone(t, entry) {
@@ -1584,14 +1827,18 @@ const A = {
   slot: (b, e) => {
     if (e.target !== b) return;
     const mins = Math.min(23 * 60 + 30, Math.floor(((e.clientY - b.getBoundingClientRect().top) / ROW) * 2) * 30);
-    const end = Math.min(mins + 60, 23 * 60 + 59);
-    eventModal(null, { date: b.dataset.day, start: pad(Math.floor(mins / 60)) + ':' + pad(mins % 60), end: pad(Math.floor(end / 60)) + ':' + pad(end % 60) });
+    eventModal(null, { date: b.dataset.day, start: pad(Math.floor(mins / 60)) + ':' + pad(mins % 60), dur: 60 });
   },
-  newEvent: () => eventModal(null, { date: dKey(ui.calMode === 'week' && monday(ui.anchor) > new Date() ? monday(ui.anchor) : new Date()) }),
-  editEvent: (b) => eventModal(byId(db.events, b.dataset.id)),
+  newEvent: () => eventModal(null, { date: dKey(ui.calMode === 'week' && monday(ui.anchor) > vNow() ? monday(ui.anchor) : vNow()) }),
+  editEvent: (b) => (b.dataset.id.startsWith('hyp:') ? hypModal(b.dataset.id.slice(4)) : eventModal(byId(db.events, b.dataset.id))),
+  hypRefresh: () => fetchElection(true),
+  calFold: (b) => { const f = (db.prefs.calFold = db.prefs.calFold || {}); f[b.dataset.k] = !f[b.dataset.k]; commit(); },
   newCal: () => calModal(),
   editCal: (b) => calModal(byId(db.calendars, b.dataset.id)),
   newTodo: () => todoModal(),
+  passiveEdit: (b) => passiveModal({ todo: byId(db.todos, b.dataset.id) }),
+  passiveWeek: () => passiveModal({ from: Date.now() - 7 * 864e5, sub: 'Last 7 days' }),
+  breakdown: (b) => breakdownModal(b.dataset.k),
   editTodo: (b) => todoModal(byId(db.todos, b.dataset.id)),
   tick: (b) => {
     const t = byId(db.todos, b.dataset.id);
@@ -1654,10 +1901,19 @@ document.addEventListener('click', (e) => {
   if (b && A[b.dataset.act]) A[b.dataset.act](b, e);
 });
 document.addEventListener('change', (e) => {
+  if (e.target.classList?.contains('dhmin') && !e.target.readOnly) {
+    const m = L.parseDhm(e.target.value);
+    e.target.classList.toggle('bad', m == null);
+    if (m != null) e.target.value = L.fmtDhm(m);
+  }
   const id = e.target.dataset?.calvis;
   if (id) { byId(db.calendars, id).visible = e.target.checked; commit(); }
   const ck = e.target.dataset?.chartcat;
   if (ck) { const h = new Set(db.prefs.chart.hidden); e.target.checked ? h.delete(ck) : h.add(ck); db.prefs.chart.hidden = [...h]; commit(); }
+  if (e.target.dataset?.hyp) { db.prefs.hyp.types[e.target.dataset.hyp] = e.target.checked; commit(); }
+  if (e.target.matches?.('[data-hypvis]')) { db.prefs.hyp.visible = e.target.checked; commit(); }
+  if (e.target.name === 'hyplimit') setHypLimit(e.target);
+  if (e.target.matches?.('[data-tz]')) { db.prefs.tz = e.target.value; commit(); }
   if (e.target.id === 'bztax') { const v = Number(e.target.value); if (e.target.value !== '' && v >= 0 && v <= 1.25) { db.prefs.bzTax = v; commit(); } else e.target.value = db.prefs.bzTax ?? 1.25; }
   if (e.target.id === 'autoupd') { db.prefs.autoUpdate = e.target.checked; commit(); if (e.target.checked && upd.avail) installUpdate(); }
   const pf = e.target.dataset?.pref;
@@ -1690,8 +1946,8 @@ $('.winbtns').addEventListener('click', async (e) => {
 
 /* ---------- reorder categories (drag, or Alt + Up/Down) ---------- */
 let dragId = null;
-function slide(sub, mutate) { // animate rows from their old position to the new one
-  const rows = [...sub.querySelectorAll('.navrow')];
+function slide(sub, mutate, sel = '.navrow') { // animate rows from their old position to the new one
+  const rows = [...sub.querySelectorAll(sel)];
   const before = new Map(rows.map((r) => [r, r.getBoundingClientRect().top]));
   mutate();
   rows.forEach((r) => {
@@ -1706,6 +1962,44 @@ function saveCatOrder(ids) {
   db.categories.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
   commit();
 }
+const saveCalOrder = (keys) => { db.prefs.calOrder = keys; commit(); };
+document.addEventListener('dragstart', (e) => {
+  const grip = e.target.closest?.('.cphead .grip');
+  if (!grip) return;
+  const sec = grip.closest('.cpanel');
+  dragId = 'panel:' + sec.dataset.panel;
+  sec.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragId);
+  e.dataTransfer.setDragImage(sec, 24, 20);
+});
+document.addEventListener('dragover', (e) => {
+  if (!dragId?.startsWith('panel:')) return;
+  const side = e.target.closest?.('.calside');
+  if (!side) return;
+  e.preventDefault();
+  const drag = side.querySelector('.cpanel.dragging'), over = e.target.closest('.cpanel');
+  if (!drag || !over || over === drag) return;
+  const r = over.getBoundingClientRect();
+  const ref = e.clientY > r.top + r.height / 2 ? over.nextElementSibling : over;
+  if (ref === drag || ref === drag.nextElementSibling) return;
+  slide(side, () => side.insertBefore(drag, ref), '.cpanel');
+});
+document.addEventListener('dragend', () => {
+  if (!dragId?.startsWith('panel:')) return;
+  dragId = null;
+  saveCalOrder([...document.querySelectorAll('.calside .cpanel')].map((x) => x.dataset.panel));
+});
+document.addEventListener('keydown', (e) => {
+  const t = e.target.closest?.('.cptitle');
+  if (!t || !e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+  e.preventDefault();
+  const keys = calOrder(), i = keys.indexOf(t.dataset.k), j = i + (e.key === 'ArrowUp' ? -1 : 1);
+  if (j < 0 || j >= keys.length) return;
+  [keys[i], keys[j]] = [keys[j], keys[i]];
+  saveCalOrder(keys);
+  $(`.cptitle[data-k="${t.dataset.k}"]`).focus();
+});
 document.addEventListener('dragstart', (e) => {
   const row = e.target.closest?.('.sub .navrow');
   if (!row) return;
@@ -1715,7 +2009,7 @@ document.addEventListener('dragstart', (e) => {
   e.dataTransfer.setData('text/plain', dragId);
 });
 document.addEventListener('dragover', (e) => {
-  if (!dragId) return;
+  if (!dragId || dragId.startsWith('panel:')) return;
   const sub = e.target.closest?.('.sub'), over = e.target.closest?.('.navrow');
   if (!sub) return;
   e.preventDefault();
@@ -1728,7 +2022,7 @@ document.addEventListener('dragover', (e) => {
 });
 document.addEventListener('drop', (e) => { if (dragId) e.preventDefault(); });
 document.addEventListener('dragend', () => {
-  if (!dragId) return;
+  if (!dragId || dragId.startsWith('panel:')) return;
   dragId = null;
   saveCatOrder([...document.querySelectorAll('.sub .navrow')].map((r) => r.dataset.catId));
 });
@@ -1742,6 +2036,9 @@ document.addEventListener('keydown', (e) => {
   saveCatOrder(ids);
   $(`.sub .navrow[data-cat-id="${ids[j]}"] .nav`).focus();
 });
+
+const setHypLimit = (inp) => { const n = parseInt(inp.value, 10); if (n >= 1 && n <= 99) { db.prefs.hyp.limit = n; commit(); } else inp.value = db.prefs.hyp.limit; };
+document.addEventListener('input', (e) => { if (e.target.name === 'hyplimit' && !e.isTrusted) setHypLimit(e.target); }); // the − / + buttons
 
 /* ---------- reminders ---------- */
 // shortcut: reminders only fire while the app is open; a background service would be needed to notify when it is closed
@@ -1764,7 +2061,16 @@ function checkReminders() {
     const rem = ev.reminder * 6e4;
     for (const o of occurrences(ev, lastCheck + rem, now + rem + 1)) {
       const t = o.start - rem;
-      if (t > lastCheck && t <= now) notify(ev.name, ev.reminder ? `Starts in ${ev.reminder} min (${hm(new Date(o.start))})` : 'Starting now');
+      if (t > lastCheck && t <= now) notify(ev.name, ev.reminder ? `Starts in ${ev.reminder} min (${hm(new Date(toView(o.start)))})` : 'Starting now');
+    }
+  }
+  const H = db.prefs.hyp;
+  for (const he of L.HYP_EVENTS) {
+    const r = H.rem[he.key];
+    if (r == null || !H.visible || !H.types[he.key]) continue;
+    for (const o of L.hypOccurrences(he, lastCheck + r * 6e4, now + r * 6e4 + 1, hypTerm())) {
+      const t = o.start - r * 6e4;
+      if (t > lastCheck && t <= now) notify(he.name, r ? `Starts in ${r} min (${hm(new Date(toView(o.start)))})` : 'Starting now');
     }
   }
   lastCheck = now;

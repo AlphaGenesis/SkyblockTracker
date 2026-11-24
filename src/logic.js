@@ -59,11 +59,33 @@
     return { from, next: stepAt(a, every, t.unit, k + 1), done: !!t.doneAt && new Date(t.doneAt).getTime() >= from };
   };
 
+  // Time zones. tzOffset: minutes east of UTC for an IANA zone at an instant. zonedMs: a wall date + time in a zone → instant.
+  const tzFmt = new Map();
+  const tzOffset = (tz, ms) => {
+    if (!tzFmt.has(tz)) tzFmt.set(tz, new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }));
+    const p = {};
+    for (const x of tzFmt.get(tz).formatToParts(ms)) p[x.type] = +x.value;
+    return Math.round((Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ms / 1000) * 1000) / 6e4);
+  };
+  const zonedMs = (date, time, tz) => {
+    const [y, mo, d] = date.split('-').map(Number), [h, mi] = time.split(':').map(Number);
+    const wall = Date.UTC(y, mo - 1, d, h, mi);
+    const guess = wall - tzOffset(tz, wall) * 6e4;
+    return wall - tzOffset(tz, guess) * 6e4; // second pass settles days when the offset changes (DST)
+  };
+  const shiftTz = (ms, fromTz, toTz) => (fromTz === toTz ? ms : ms + (tzOffset(toTz, ms) - tzOffset(fromTz, ms)) * 6e4);
+
+  // Event length in minutes. Events saved before durations existed have an end time instead (past midnight = next day).
+  const eventMin = (ev) => {
+    if (ev.dur != null) return ev.dur;
+    const m = (new Date('2000-01-01T' + ev.end) - new Date('2000-01-01T' + ev.start)) / 6e4;
+    return m > 0 ? m : m + 1440;
+  };
+
   // Every occurrence of an event that overlaps [from, to).
   const occurrences = (ev, from, to) => {
-    let s = new Date(ev.date + 'T' + ev.start).getTime();
-    let dur = new Date(ev.date + 'T' + ev.end).getTime() - s;
-    if (dur <= 0) dur += 864e5; // ends after midnight
+    let s = ev.tz ? zonedMs(ev.date, ev.start, ev.tz) : new Date(ev.date + 'T' + ev.start).getTime();
+    const dur = eventMin(ev) * 6e4;
     let r = ev.repeat && ev.repeat.every > 0 ? ev.repeat : null; // a zero interval would loop forever
     if (ev.repeat && ev.repeat.sbYear) { s = SB_YEAR_ANCHOR; r = Object.assign({}, ev.repeat, { every: SB_YEAR_MIN, unit: 'minutes' }); }
     if (!r) return s < to && s + dur > from ? [{ start: s, end: s + dur }] : [];
@@ -150,7 +172,80 @@
     return { spent, payout, pnl: payout - spent };
   };
 
-  const api = { DICE, diceResult, sellFees, splitBuy, candles, buckets, qfPct, forgeEnd, secText, UNIT_MS, SB_YEAR_ANCHOR, SB_YEAR_MIN, fmt, signed, parse, stepAt, splitMin, everyText, todoState, occurrences };
+  // One-field duration: "1d 2h 30m", "120m", "2h30", "1.5h", "90" (plain number = minutes) → whole minutes, or null if unreadable.
+  const parseDhm = (str) => {
+    const t = String(str).toLowerCase().replace(/\s+/g, '').replace(/min/g, 'm');
+    if (!t || !/^(\d+(\.\d+)?[dhm]?)+$/.test(t)) return null;
+    let min = 0, last = '';
+    for (const [, n, u] of t.matchAll(/(\d+(?:\.\d+)?)([dhm]?)/g)) {
+      const unit = u || (last === 'd' ? 'h' : 'm'); // "2h30" → 30 minutes, "1d4" → 4 hours
+      min += Number(n) * { d: 1440, h: 60, m: 1 }[unit];
+      last = unit;
+    }
+    return Math.round(min);
+  };
+  const fmtDhm = (min) => {
+    const s = splitMin(Math.max(0, Math.round(min || 0)));
+    return [s.d && s.d + 'd', s.h && s.h + 'h', s.m && s.m + 'm'].filter(Boolean).join(' ') || '0m';
+  };
+
+  // ---- SkyBlock calendar. Year 1 began 11 Jun 2019 17:55 UTC; 12 months of 31 days, 1 day = 20 real minutes, 1 hour = 50 s.
+  const SB_EPOCH = Date.UTC(2019, 5, 11, 17, 55), SB_DAY = 20 * 6e4, SB_HOUR = 50e3, SB_YEAR_MS = SB_YEAR_MIN * 6e4;
+  const SB_MONTHS = ['Early Spring', 'Spring', 'Late Spring', 'Early Summer', 'Summer', 'Late Summer', 'Early Autumn', 'Autumn', 'Late Autumn', 'Early Winter', 'Winter', 'Late Winter'];
+  const sbTime = (year, month, day, hour = 0) => SB_EPOCH + (year - 1) * SB_YEAR_MS + ((month - 1) * 31 + day - 1) * SB_DAY + hour * SB_HOUR;
+  const sbDate = (ms) => {
+    const t = ms - SB_EPOCH, y = Math.floor(t / SB_YEAR_MS), r = t - y * SB_YEAR_MS, d = Math.floor(r / SB_DAY);
+    return { year: y + 1, month: Math.floor(d / 31) + 1, day: (d % 31) + 1, hour: Math.floor((r - d * SB_DAY) / SB_HOUR) };
+  };
+  // Recurring SkyBlock events (dates from the SkyBlock wiki "Events" and "Mayor Election" pages; DA / Jacob's / Cult as in the NEU mod).
+  // hourly: [minute, length in min] each real hour · days: [[fromMonth, fromDay, toMonth, toDay]] every year · monthly: [fromDay, toDay] every month
+  // cult: those days of every month, 6 real minutes · mayor: only while that mayor is in office · tenure: the whole term
+  const HYP_EVENTS = [
+    { key: 'da', name: 'Dark Auction', group: 'Frequent', color: 'violet', hourly: [55, 5], desc: 'Bid on rare items at the Dark Auction in the Hub (Wither Cloak).' },
+    { key: 'jacob', name: "Jacob's Farming Contest", group: 'Frequent', color: 'green', hourly: [15, 20], desc: 'Farming contest for 3 crops. Talk to Jacob in the Hub.' },
+    { key: 'cult', name: 'Cult of the Fallen Star', group: 'Frequent', color: 'teal', cult: [7, 14, 21, 28], desc: 'The cult meets near the Star in the Dwarven Mines (days 7, 14, 21 and 28 of every month).' },
+    { key: 'zoo', name: 'Traveling Zoo', group: 'Calendar', color: 'gold', days: [[4, 1, 4, 3], [10, 1, 10, 3]], desc: 'Oringo sells a legendary pet in the Hub (Early Summer 1–3 and Early Winter 1–3).' },
+    { key: 'spooky', name: 'Spooky Festival', group: 'Calendar', color: 'orange', days: [[8, 29, 8, 31]], desc: 'Autumn 29–31. Kill spooky mobs for candy.' },
+    { key: 'jerry', name: 'Season of Jerry', group: 'Calendar', color: 'red', days: [[12, 24, 12, 26]], desc: "Late Winter 24–26. Defend Jerry's Workshop." },
+    { key: 'newyear', name: 'New Year Celebration', group: 'Calendar', color: 'pink', days: [[12, 29, 12, 31]], desc: 'Late Winter 29–31. The Baker hands out New Year Cakes.' },
+    { key: 'hoppity', name: "Hoppity's Hunt", group: 'Calendar', color: 'amber', days: [[1, 1, 3, 31]], desc: 'Early Spring 1 – Late Spring 31. Find chocolate eggs.' },
+    { key: 'harvest', name: 'Harvest Feast', group: 'Calendar', color: 'lime', days: [[7, 1, 9, 31]], desc: 'Early Autumn 1 – Late Autumn 31.' },
+    { key: 'booth', name: 'Election opens', group: 'Election', color: 'blue', days: [[6, 27, 6, 27]], desc: 'Late Summer 27: the election booth opens in the Community Center.' },
+    { key: 'newmayor', name: 'New mayor', group: 'Election', color: 'blue', days: [[3, 27, 3, 27]], desc: 'Late Spring 27: the election ends and the winner becomes mayor.' },
+    { key: 'fishfest', name: 'Fishing Festival', group: 'Mayor', mayor: 'Marina', color: 'cyan', monthly: [1, 3], desc: "Marina's perk: days 1–3 of every month, sharks spawn." },
+    { key: 'stonks', name: 'Stonks Auction', group: 'Mayor', mayor: 'Diaz', color: 'gold', monthly: [27, 31], desc: "Diaz's perk: bid for Stock of Stonks, days 27–31 of every month." },
+    { key: 'fiesta', name: 'Mining Fiesta', group: 'Mayor', mayor: 'Cole', color: 'orange', tenure: true, desc: "Cole's perk: Mining Fiesta for the whole term." },
+    { key: 'mytho', name: 'Mythological Ritual', group: 'Mayor', mayor: 'Diana', color: 'green', tenure: true, desc: "Diana's perk: Griffin burrows in the Hub for the whole term." },
+    { key: 'carnival', name: 'Carnival', group: 'Mayor', mayor: 'Foxy', color: 'pink', tenure: true, desc: "Foxy's perk: the Carnival is open in the Hub for the whole term." },
+  ];
+  // Occurrences of one event overlapping [from, to). term: { mayor, start, end } of the mayor in office, or null.
+  const hypOccurrences = (ev, from, to, term) => {
+    let lo = from, hi = to;
+    if (ev.mayor) {
+      if (!term || term.mayor !== ev.mayor) return [];
+      lo = Math.max(from, term.start); hi = Math.min(to, term.end);
+      if (lo >= hi) return [];
+      if (ev.tenure) return [{ start: term.start, end: term.end }];
+    }
+    const out = [], add = (s, e) => { if (s < hi && e > lo) out.push({ start: s, end: e }); };
+    if (ev.hourly) {
+      for (let h = Math.floor(lo / 36e5) * 36e5 - 36e5; h < hi; h += 36e5) add(h + ev.hourly[0] * 6e4, h + (ev.hourly[0] + ev.hourly[1]) * 6e4);
+      return out;
+    }
+    const y0 = sbDate(lo).year - 1, y1 = sbDate(hi).year;
+    for (let y = y0; y <= y1; y++) {
+      if (ev.days) for (const [m1, d1, m2, d2] of ev.days) add(sbTime(y, m1, d1), sbTime(y, m2, d2) + SB_DAY);
+      for (let m = 1; m <= 12; m++) {
+        if (ev.monthly) add(sbTime(y, m, ev.monthly[0]), sbTime(y, m, ev.monthly[1]) + SB_DAY);
+        if (ev.cult) for (const d of ev.cult) add(sbTime(y, m, d), sbTime(y, m, d) + 6 * 6e4);
+      }
+    }
+    return out.sort((a, b) => a.start - b.start);
+  };
+  // The mayor elected in election year e is in office from Late Spring 27 of e+1 to Late Spring 27 of e+2.
+  const mayorTerm = (electionYear) => ({ start: sbTime(electionYear + 1, 3, 27), end: sbTime(electionYear + 2, 3, 27) });
+
+  const api = { SB_EPOCH, SB_MONTHS, sbTime, sbDate, HYP_EVENTS, hypOccurrences, mayorTerm, tzOffset, zonedMs, shiftTz, eventMin, parseDhm, fmtDhm, DICE, diceResult, sellFees, splitBuy, candles, buckets, qfPct, forgeEnd, secText, UNIT_MS, SB_YEAR_ANCHOR, SB_YEAR_MIN, fmt, signed, parse, stepAt, splitMin, everyText, todoState, occurrences };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.L = api;
 })(this);
