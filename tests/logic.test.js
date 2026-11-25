@@ -173,4 +173,20 @@ assert.deepStrictEqual(L.sbDate(L.SB_EPOCH), { year: 1, month: 1, day: 1, hour: 
   assert.strictEqual(L.hypOccurrences(HE.fishfest, term.start, term.end, term).length, 12); // days 1-3 of every month of the term
   assert.deepStrictEqual(L.hypOccurrences(HE.fiesta, y, yEnd, { mayor: 'Cole', ...L.mayorTerm(527) }), [{ start: term.start, end: term.end }]); }
 
+// items added to NEU-REPO after the build
+{ const val = Buffer.from(JSON.stringify({ textures: { SKIN: { url: 'http://textures.minecraft.net/texture/abc123' } } })).toString('base64');
+  assert.deepStrictEqual(L.neuItem('PET_SKIN_SCATHA_MECHA', { displayname: '§6Mecha Scatha Skin', nbttag: `{SkullOwner:{Properties:{textures:[0:{Value:"${val}"}]}},components:{ItemModel:"minecraft:player_head"}}` }),
+    { name: 'Mecha Scatha Skin', model: 'minecraft:player_head', skin: 'abc123' });
+  assert.deepStrictEqual(L.neuItem('SCATHA;4', { displayname: '§f[Lvl {LVL}] §6Scatha', nbttag: '{ItemModel:"hypixel_skyblock:pet/scatha",SkullOwner:{}}' }),
+    { name: 'Scatha Pet', model: 'hypixel_skyblock:pet/scatha', skin: null }); // pack texture wins over the head
+  assert.deepStrictEqual(L.neuItem('X', { displayname: 'Odd', nbttag: '{SkullOwner:{Value:"%%%"}}' }), { name: 'Odd', model: '', skin: null });
+  assert.strictEqual(L.neuItem('FINE_ONYX_GEM', { displayname: '§9 Fine Onyx Gemstone' }).name, 'Fine Onyx Gemstone');
+  assert.strictEqual(L.neuItem('SCATHA_MONSTER', { displayname: 'Scatha' }), null);
+  assert.strictEqual(L.neuItem('Y', null), null);
+  assert.deepStrictEqual(L.hypItem({ name: '§aLarge Runes Sack', material: 'SKULL_ITEM', skin: { value: val } }), { name: 'Large Runes Sack', model: 'minecraft:skull', skin: 'abc123' });
+  assert.deepStrictEqual(L.hypItem({ name: 'Gold Thing', material: 'GOLD_SWORD' }), { name: 'Gold Thing', model: 'minecraft:golden_sword', skin: null });
+  assert.strictEqual(L.hypItem({ name: 'X', material: 'WOOD_SPADE' }).model, 'minecraft:wooden_shovel');
+  assert.strictEqual(L.hypItem({ name: 'X', material: 'CARROT_ITEM', skin: { value: '%%%' } }).skin, null);
+  assert.strictEqual(L.hypItem({ name: '§7' }), null); }
+
 console.log('logic tests passed');

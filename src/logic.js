@@ -245,7 +245,33 @@
   // The mayor elected in election year e is in office from Late Spring 27 of e+1 to Late Spring 27 of e+2.
   const mayorTerm = (electionYear) => ({ start: sbTime(electionYear + 1, 3, 27), end: sbTime(electionYear + 2, 3, 27) });
 
-  const api = { SB_EPOCH, SB_MONTHS, sbTime, sbDate, HYP_EVENTS, hypOccurrences, mayorTerm, tzOffset, zonedMs, shiftTz, eventMin, parseDhm, fmtDhm, DICE, diceResult, sellFees, splitBuy, candles, buckets, qfPct, forgeEnd, secText, UNIT_MS, SB_YEAR_ANCHOR, SB_YEAR_MIN, fmt, signed, parse, stepAt, splitMin, everyText, todoState, occurrences };
+  // One NEU-REPO item file -> { name, model, skin }, same rules as tools/build_items.py; null for NPCs and mobs.
+  const neuItem = (id, j) => {
+    const nbt = String(j?.nbttag || '');
+    let name = String(j?.displayname || '').replace(/§.|[-]/g, '').trim(); // color codes, Hypixel font glyphs
+    if (!name || /_(NPC|MONSTER|MOB|BOSS)$/.test(id)) return null;
+    name = name.replace(/^\[Lvl \{LVL\}\] (.*)$/, '$1 Pet');
+    const model = (nbt.match(/ItemModel:"([^"]+)"/) || [])[1] || '';
+    let skin = null;
+    if (!model.startsWith('hypixel_skyblock:') && nbt.includes('SkullOwner')) {
+      const v = (nbt.match(/Value:"([A-Za-z0-9+/=]+)"/) || [])[1];
+      try { skin = (v && (atob(v).match(/textures\.minecraft\.net\/texture\/(\w+)/) || [])[1]) || null; } catch {}
+    }
+    return { name, model, skin };
+  };
+
+  // One Hypixel API item -> { name, model, skin } like neuItem; model from the old Minecraft material name ("GOLD_SWORD" -> "minecraft:golden_sword").
+  const hypItem = (h) => {
+    const name = String(h?.name || '').replace(/§.|[\uE000-\uF8FF]/g, '').trim();
+    if (!name) return null;
+    const model = 'minecraft:' + String(h.material || '').toLowerCase().replace(/^gold_/, 'golden_').replace(/^wood_/, 'wooden_').replace(/_spade$/, '_shovel')
+      .replace(/_item$/, '').replace(/^empty_map$/, 'map').replace(/^exp_bottle$/, 'experience_bottle');
+    let skin = null;
+    try { skin = (atob(h.skin?.value || '').match(/textures\.minecraft\.net\/texture\/(\w+)/) || [])[1] || null; } catch {}
+    return { name, model, skin };
+  };
+
+  const api = { neuItem, hypItem, SB_EPOCH, SB_MONTHS, sbTime, sbDate, HYP_EVENTS, hypOccurrences, mayorTerm, tzOffset, zonedMs, shiftTz, eventMin, parseDhm, fmtDhm, DICE, diceResult, sellFees, splitBuy, candles, buckets, qfPct, forgeEnd, secText, UNIT_MS, SB_YEAR_ANCHOR, SB_YEAR_MIN, fmt, signed, parse, stepAt, splitMin, everyText, todoState, occurrences };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.L = api;
 })(this);

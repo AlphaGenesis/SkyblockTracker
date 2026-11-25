@@ -18,7 +18,7 @@ jar_names = set(jar.namelist())
 os.makedirs(cache, exist_ok=True)
 os.makedirs(os.path.join(out, 'items'), exist_ok=True)
 
-strip = lambda s: re.sub('§.', '', s or '').strip()
+strip = lambda s: re.sub('§.|[-]', '', s or '').strip()  # color codes, Hypixel font glyphs
 
 
 def first_frame(img):

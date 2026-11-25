@@ -1185,9 +1185,66 @@ const setErr = (form, msg) => { form.querySelector('.err').textContent = msg; };
 // a flip shows its item image if it has one, else its category icon
 const flipIcon = (f, m, size) => (f.img ? `<img class="pix" src="${esc(f.img)}" alt="" style="width:${size + 8}px;height:${size + 8}px">` : ic(P[m.icon], size));
 // item name -> icon path, from the bundled item list (items.js)
-const ITEM_BY_NAME = new Map(ITEMS.map(([n, file]) => [n.toLowerCase(), file]));
+const ITEM_ROW = new Map(ITEMS.map((r) => [r[0].toLowerCase(), r]));
 const itemPic = (name, size) => { const src = itemImg(name); return src ? `<img class="pix" src="${src}" alt="" width="${size}" height="${size}" style="vertical-align:middle;margin-right:6px">` : ''; };
-const itemImg = (name) => { const file = ITEM_BY_NAME.get(String(name).trim().toLowerCase()); return file ? 'items/' + file : null; };
+const itemSrc = (file) => (/^(data|https):/.test(file) ? file : 'items/' + file); // bundled file, our repo's newer icon, or a drawn head
+const itemImg = (name) => { const file = ITEM_ROW.get(String(name).trim().toLowerCase())?.[1]; return file ? itemSrc(file) : null; };
+// Items newer than this version, without updating the app:
+// 1. our GitHub repo: the item list and icons as last rebuilt (Hypixel pack textures included)
+// 2. NEU-REPO: items added after that rebuild; icon = head skin, else the plain Minecraft texture of its model
+// 3. Hypixel API: items in neither (same icon rules)
+const GH_SRC = 'https://raw.githubusercontent.com/AlphaGenesis/SkyblockTracker/main/src/', NEU_REPO = 'NotEnoughUpdates/NotEnoughUpdates-REPO';
+const BUNDLED = new Set(ITEMS.map((r) => r[1]));
+const setItem = (name, file) => { const k = name.toLowerCase(), row = ITEM_ROW.get(k); if (row) row[1] = file; else { const r = [name, file]; ITEMS.push(r); ITEM_ROW.set(k, r); } };
+async function loadItems() {
+  let ids = NEU_IDS, icons = MODEL_ICONS;
+  const add = (it) => { // skipped when a list already has it with an icon
+    if (!it || ITEM_ROW.get(it.name.toLowerCase())?.[1]) return;
+    setItem(it.name, icons[it.model] || '');
+    if (it.skin) headFace(it.skin).then((d) => setItem(it.name, d), () => {}); // keeps the model icon if the skin can't load
+  };
+  const hypList = fetch('https://api.hypixel.net/v2/resources/skyblock/items').then((r) => r.json()); // in parallel, applied last
+  const remote = (f) => (!f || BUNDLED.has(f) ? f : GH_SRC + 'items/' + f);
+  try {
+    const [it, nx] = await Promise.all(['items.js', 'neu.js'].map((f) => fetch(GH_SRC + f).then((r) => (r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status))))));
+    const val = (txt, n) => JSON.parse(txt.match(new RegExp(`^const ${n} = (.*);$`, 'm'))[1]); // data only, never run
+    for (const [n, f] of val(it, 'ITEMS')) if (typeof n === 'string' && typeof f === 'string' && /^[\w.]*$/.test(f) && (f || !ITEM_ROW.has(n.toLowerCase()))) setItem(n, remote(f));
+    ids = val(nx, 'NEU_IDS'); icons = Object.fromEntries(Object.entries(val(nx, 'MODEL_ICONS')).map(([m, f]) => [m, remote(f)]));
+  } catch (e) { console.warn('Item list from GitHub not loaded:', e); }
+  try {
+    const tree = await (await fetch(`https://api.github.com/repos/${NEU_REPO}/git/trees/master?recursive=1`)).json();
+    const known = new Set(String(ids).split(',')), cache = (() => { try { return JSON.parse(localStorage.getItem('neuItems')) || {}; } catch { return {}; } })();
+    let fetches = 0;
+    await Promise.all((tree.tree || []).map((x) => (x.path.match(/^items\/(.+)\.json$/) || [])[1]).filter((id) => id && !known.has(id)).map(async (id) => {
+      if (!(id in cache)) {
+        if (++fetches > 300) return; // shortcut: at most 300 new items per launch, the rest come next launch
+        try { cache[id] = L.neuItem(id, await (await fetch(`https://raw.githubusercontent.com/${NEU_REPO}/master/items/${encodeURIComponent(id)}.json`)).json()) || 0; } catch { return; }
+      }
+      add(cache[id] || null);
+    }));
+    try { localStorage.setItem('neuItems', JSON.stringify(cache)); } catch {}
+  } catch (e) { console.warn('NEU-REPO items not loaded:', e); }
+  try { for (const h of (await hypList).items || []) add(L.hypItem(h)); } catch (e) { console.warn('Hypixel item list not loaded:', e); }
+  ITEMS.sort((a, b) => (a[0].toLowerCase() < b[0].toLowerCase() ? -1 : 1));
+}
+// Face of a player-head skin (8x8 + hat layer), as the build tool draws it; cached per skin in this browser.
+const headFace = (hash) => new Promise((res, rej) => {
+  const key = 'head:' + hash;
+  try { const c = localStorage.getItem(key); if (c) return res(c); } catch {}
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    const c = document.createElement('canvas'), g = c.getContext('2d');
+    c.width = c.height = 8;
+    g.drawImage(img, 8, 8, 8, 8, 0, 0, 8, 8);
+    if (img.height >= 32) g.drawImage(img, 40, 8, 8, 8, 0, 0, 8, 8);
+    const d = c.toDataURL();
+    try { localStorage.setItem(key, d); } catch {}
+    res(d);
+  };
+  img.onerror = rej;
+  img.src = 'https://textures.minecraft.net/texture/' + hash;
+});
 function itemMatches(q, max = 8) {
   q = q.trim().toLowerCase();
   if (q.length < 2) return [];
@@ -1269,7 +1326,7 @@ function flipModal(f) {
   const closeSugg = () => { sugg.hidden = true; nameIn.setAttribute('aria-expanded', 'false'); nameIn.removeAttribute('aria-activedescendant'); };
   const renderSugg = () => {
     list = itemMatches(nameIn.value); active = -1;
-    sugg.innerHTML = list.map(([n, file], i) => `<button type="button" role="option" id="sg${i}" data-i="${i}" tabindex="-1">${file ? `<img class="pix" src="items/${file}" alt="">` : '<span class="noimg"></span>'}<span class="ell">${esc(n)}</span></button>`).join('');
+    sugg.innerHTML = list.map(([n, file], i) => `<button type="button" role="option" id="sg${i}" data-i="${i}" tabindex="-1">${file ? `<img class="pix" src="${esc(itemSrc(file))}" alt="">` : '<span class="noimg"></span>'}<span class="ell">${esc(n)}</span></button>`).join('');
     sugg.hidden = !list.length; nameIn.setAttribute('aria-expanded', String(!!list.length));
   };
   const setActive = (i) => {
@@ -1281,7 +1338,7 @@ function flipModal(f) {
   const pick = (i) => {
     const [n, file] = list[i];
     nameIn.value = n;
-    if (!locked()) { img = file ? 'items/' + file : null; imgFrom = img ? 'auto' : null; }
+    if (!locked()) { img = file ? itemSrc(file) : null; imgFrom = img ? 'auto' : null; }
     closeSugg(); showImg();
   };
   nameIn.addEventListener('input', () => {
@@ -1295,7 +1352,7 @@ function flipModal(f) {
     const q = (isearch.value || nameIn.value).trim().toLowerCase();
     const hits = [];
     for (const r of ITEMS) if (r[1] && (!q || r[0].toLowerCase().includes(q)) && hits.push(r) >= 72) break;
-    igrid.innerHTML = hits.map(([n, file]) => `<button type="button" role="option" data-file="${file}" title="${esc(n)}" aria-label="${esc(n)}"><img class="pix" src="items/${file}" alt=""></button>`).join('')
+    igrid.innerHTML = hits.map(([n, file]) => `<button type="button" role="option" data-file="${esc(file)}" title="${esc(n)}" aria-label="${esc(n)}"><img class="pix" src="${esc(itemSrc(file))}" alt=""></button>`).join('')
       || '<span class="small muted" style="grid-column:1/-1;padding:8px">No image matches.</span>';
   };
   const togglePick = (open) => {
@@ -1311,7 +1368,7 @@ function flipModal(f) {
   igrid.addEventListener('click', (e) => {
     const b = e.target.closest('[data-file]');
     if (!b) return;
-    img = 'items/' + b.dataset.file; imgFrom = 'manual';
+    img = itemSrc(b.dataset.file); imgFrom = 'manual';
     togglePick(false); showImg();
   });
   nameIn.addEventListener('keydown', (e) => {
@@ -2103,6 +2160,7 @@ load().then(async () => {
   dataPath = T ? await T.core.invoke('data_file').catch((e) => 'Unknown (' + e + ')') : 'Browser storage (no file when the app runs in a browser)';
   render();
   checkTimers(); // timers that finished while the app was closed
+  loadItems();
   if (T) { upd.version = await T.app.getVersion().catch(() => ''); checkUpdate(); }
   setInterval(() => { checkReminders(); checkTimers(); if (!dragId) render(); }, 20e3); // don't redraw mid-drag
 });
