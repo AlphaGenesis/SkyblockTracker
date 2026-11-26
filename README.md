@@ -17,7 +17,7 @@
 ## Features
 
 ### Investments
-Log every flip from purchase to sale. Sort by item, total price, price each or quantity, and organize flips in your own categories (colors, icons, drag to reorder). Item names autocomplete from about 7,000 SkyBlock items, with their icons.
+Log every flip from purchase to sale. Sort by item, total price, price each or quantity, and organize flips in your own categories (colors, icons, drag to reorder). Item names autocomplete from about 7,000 SkyBlock items, with their icons. New items and skins are picked up at startup from NEU-REPO and the Hypixel API, without updating the app.
 
 ### Selling, with fees calculated for you
 Close a flip and the profit or loss is calculated right away. Fees are filled in from the sell price: AH (BIN listing fee + claim tax) or Bazaar (your own tax rate, set in Settings). You can still change them by hand. Sell only part of a stack: the rest stays open as its own flip. You can also select several flips and sell them all at once.
@@ -30,7 +30,7 @@ Track Archfiend Dice and High Class Archfiend Dice: what you paid, count your ro
 ![Dice](docs/dice.png)
 
 ### Stats
-Profit, losses, passive income, dice and net result over 7 days, 30 days, 90 days, a year, all time or your own dates. Bars, line, cumulative, candles or stacked charts, by day, week or month, and a by-category view (list, pie or bars).
+Profit, losses, passive income, dice and net result over 7 days, 30 days, 90 days, a year, all time or your own dates. Click any card to see exactly what it counts. Bars, line, cumulative, candles or stacked charts, by day, week or month, and a by-category view (list, pie or bars).
 
 ![Stats](docs/stats.png)
 
@@ -40,9 +40,13 @@ Forge timers for 124 recipes, with your Quick Forge perk applied, and your own c
 ![Timers](docs/timers.png)
 
 ### Calendar and To Do
-Stack several calendars, add repeating events with reminders. To Do tasks reset on their own (every day, every few hours, or every SkyBlock year), and passive income tasks ask how much you earned and add it to your stats.
+Stack several calendars, add repeating events with reminders. Turn on SkyBlock events (Dark Auction, Spooky Festival, Traveling Zoo, mayor perks…) worked out from the SkyBlock calendar, with the current mayor read live from the Hypixel API. Times follow your PC's time zone, or one you pick. The side panels scroll on their own, fold, and can be reordered.
 
 ![Calendar](docs/calendar.png)
+
+To Do tasks reset on their own (every day, every few hours, or every SkyBlock year), and passive income tasks ask how much you earned and add it to your stats. Click the passive card to see and edit what you earned.
+
+![To Do](docs/todo.png)
 
 ### Profiles
 Each profile has its own flips, dice, passive income, timers and stats. Categories, the calendar and the To Do list are shared.
