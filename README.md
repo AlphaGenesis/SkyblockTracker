@@ -48,6 +48,11 @@ To Do tasks reset on their own (every day, every few hours, or every SkyBlock ye
 
 ![To Do](docs/todo.png)
 
+### Collection
+Link your Minecraft account and click Refresh: the app lists the rare leather armor on your SkyBlock profiles (inventory, ender chest, backpacks, wardrobe, vault). Exotic, Crystal, Fairy, OG Fairy, Spook and Bleached pieces are found by comparing each hex to the item's normal color; dyed pieces are left out. Seymour pieces are graded T0 to T3 against known armor colors, with hex patterns, like SeymourAnalyzer. Each piece shows its exact color, Hot Potato Books, recomb, reforge, stars and enchants.
+
+Scanning your inventories needs your own Hypixel API key (developer.hypixel.net) and the Inventory API turned on in SkyBlock. Without a key, Refresh still reads the pieces the SeymourAnalyzer mod saved while you scanned your chests.
+
 ### Profiles
 Each profile has its own flips, dice, passive income, timers and stats. Categories, the calendar and the To Do list are shared.
 
@@ -98,3 +103,7 @@ npm run build    # build the installer
 ## Disclaimer
 
 Skyblock Tracker is a fan-made tool. It is not affiliated with or endorsed by Hypixel or Mojang. Item textures belong to their owners.
+
+## License
+
+GPL-3.0 (see [LICENSE](LICENSE)). The leather armor color matching, tiers and patterns are ported from [SeymourAnalyzer](https://github.com/Schnerry/SeymourAnalyzerFabric) by Schnerry (originally the CT module by AllyMeSB), GPL-3.0, and its color list is bundled in `src/seymour.js`. The Set builder's categories and target colors come from the community [hex sheet](https://docs.google.com/spreadsheets/d/1MuBide8AJzDYoF62G3h7F6_1u4GvouvIm9RMXMH-pPc) (`src/sets.js`, rebuilt with `node tools/build_sets.js`).

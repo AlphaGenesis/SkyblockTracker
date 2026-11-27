@@ -2,6 +2,7 @@
 const { fmt, signed, parse, todoState, occurrences } = L;
 const T = window.__TAURI__; // undefined when opened in a plain browser
 const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const pad = (n) => String(n).padStart(2, '0');
@@ -40,6 +41,12 @@ const P = {
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   trash: '<path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/>',
+  filter: '<path d="M4 5h16l-6 7.5V19l-4-2v-4.5z"/>',
+  zoomIn: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8.5 11h5M11 8.5v5"/>',
+  zoomOut: '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8.5 11h5"/>',
+  peek: '<circle cx="10" cy="10" r="6"/><path d="M14.5 14.5L20 20"/><circle cx="10" cy="8.8" r="1.8"/><path d="M7.2 13a3.2 3.2 0 0 1 5.6 0"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   left: '<path d="M15 6l-6 6 6 6"/>',
   right: '<path d="M9 6l6 6-6 6"/>',
@@ -99,7 +106,7 @@ let saveBlocked = false;
 let saving = Promise.resolve();
 const EMPTY = () => {
   const p = uid();
-  return { profiles: [{ id: p, name: 'Main' }], activeProfile: p, prefs: { period: 'all', from: '', to: '', catView: 'list', catMetric: 'invested', chart: { style: 'bars', group: 'day', sign: 'all', hidden: [] }, hyp: { visible: true, types: {}, limit: 5, rem: {} } }, categories: [], flips: [], timers: [], presets: [], calendars: [], events: [], todos: [], passive: [], dice: [] };
+  return { profiles: [{ id: p, name: 'Main' }], activeProfile: p, prefs: { period: 'all', from: '', to: '', catView: 'list', catMetric: 'invested', chart: { style: 'bars', group: 'day', sign: 'all', hidden: [] }, hyp: { visible: true, types: {}, limit: 5, rem: {} }, coll: { name: '', key: '', file: '' } }, coll: { pieces: {}, at: null, msg: '' }, categories: [], flips: [], timers: [], presets: [], calendars: [], events: [], todos: [], passive: [], dice: [] };
 };
 // Time zones. Events and to dos keep the zone they were made in, so they stay at the same real moment.
 // The calendar and to do show everything in the chosen zone (Auto = the PC's). The rest of the UI reads times with the PC's
@@ -138,6 +145,7 @@ function migrate(raw) {
   d.prefs = Object.assign(EMPTY().prefs, d.prefs);
   d.prefs.chart = Object.assign(EMPTY().prefs.chart, d.prefs.chart);
   d.prefs.hyp = Object.assign({ visible: true, types: {}, limit: 5, rem: {} }, d.prefs.hyp); // Hypixel layer: which events, reminders
+  d.prefs.coll = Object.assign({ name: '', key: '', file: '' }, d.prefs.coll);
   return d;
 }
 
@@ -161,7 +169,7 @@ function save() {
 function commit() { save(); render(); }
 
 /* ---------- ui state ---------- */
-const ui = { sort: { key: 'date', dir: -1 }, pOpen: false, catsOpen: true, view: 'inv', cat: 'all', tab: 'all', q: '', sel: new Set(), anchor: new Date(), calMode: 'week', passiveOpen: false };
+const ui = { collTab: 'pieces', setRef: null, setCat: null, collPick: new Set(), collSel: { slot: new Set(), kind: new Set(), pat: false, gone: false }, collOpen: false, sort: { key: 'date', dir: -1 }, pOpen: false, catsOpen: true, view: 'inv', cat: 'all', tab: 'all', q: '', sel: new Set(), anchor: new Date(), calMode: 'week', passiveOpen: false };
 const ROW = 48; // px per hour in the week grid
 
 const derive = (f) => {
@@ -248,7 +256,8 @@ function sideHtml() {
   const nDue = db.todos.filter((t) => !todoNow(t).done).length;
   const net = sum(flips.filter((f) => f.sold), (f) => f.pnl);
   return `
-  <div class="brand"><img class="logo" src="logo.png" alt=""><div><b>Skyblock</b><i>Tracker</i></div></div>
+  <div class="brand"><img class="logo" src="logo.png" alt=""><div class="grow"><b>Skyblock</b><i>Tracker</i></div>
+    <button type="button" class="kofibtn" data-act="kofi" title="Support me on Ko-fi" aria-label="Support me on Ko-fi (opens your browser)"><svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24"><path d="M3 6.5h14.5a3.5 3.5 0 0 1 0 7H16.6A6.5 6.5 0 0 1 10.5 18h-1A6.5 6.5 0 0 1 3 11.5z" fill="#fff"/><path d="M16.8 8.6h.7a1.4 1.4 0 0 1 0 2.8h-.7z" fill="#29abe0"/><path d="M9.9 14.6s-3.4-2.1-3.4-4.2a1.7 1.7 0 0 1 3.4-.6 1.7 1.7 0 0 1 3.4.6c0 2.1-3.4 4.2-3.4 4.2z" fill="#ff5e5b"/></svg></button></div>
   <div class="pmenu">
     <button type="button" class="profile" data-act="pmenu" aria-haspopup="menu" aria-expanded="${ui.pOpen}" aria-label="Profile: ${esc(profileName(db.activeProfile))}">${ic(P.user, 17)}<span class="grow ell">${esc(profileName(db.activeProfile))}</span>${ic(ui.pOpen ? P.chevUp : P.chevDown, 16, 2)}</button>
     ${ui.pOpen ? `<div class="pdrop" role="menu" aria-label="Profiles">
@@ -265,6 +274,7 @@ function sideHtml() {
         <button type="button" class="pnew createcat" data-act="newCat">${ic(P.plus, 15, 2)}Create category</button>` : ''}
     </div>
     ${navBtn(ui.view === 'dice', P.dice, 'Dice', `<span class="count">${myDice().filter((d) => !d.end).length}</span>`, 'data-act="nav" data-view="dice"')}
+    ${navBtn(ui.view === 'coll', P.skins, 'Collection', `<span class="count">${Object.values(db.coll.pieces).filter((x) => !x.gone).length}</span>`, 'data-act="nav" data-view="coll"')}
     ${navBtn(ui.view === 'history', P.history, 'History', `<span class="count">${flips.filter((f) => f.sold).length}</span>`, 'data-act="nav" data-view="history"')}
     <div class="group">
       ${navBtn(ui.view === 'cal', P.cal, 'Calendar', `<span class="hint">${nToday} today</span>`, 'data-act="nav" data-view="cal"')}
@@ -279,10 +289,7 @@ function sideHtml() {
     <span class="small ${net >= 0 ? 'pos' : 'neg'}" style="font-weight:500">${signed(net)} net realized</span>
   </div>
   ${upd.avail && !upd.busy ? `<button type="button" class="nav updbtn" data-act="installUpdate">${ic(P.download, 18, 2)}<span class="grow">Update to v${esc(upd.avail.version)}</span></button>` : ''}
-  ${navBtn(ui.view === 'settings', P.settings, 'Settings', '', 'data-act="nav" data-view="settings"')}
-  <button type="button" class="nav kofi" data-act="kofi" aria-label="Support me on Ko-fi (opens your browser)">
-    <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24"><path d="M3 6.5h14.5a3.5 3.5 0 0 1 0 7H16.6A6.5 6.5 0 0 1 10.5 18h-1A6.5 6.5 0 0 1 3 11.5z" fill="#fff"/><path d="M16.8 8.6h.7a1.4 1.4 0 0 1 0 2.8h-.7z" fill="#29abe0"/><path d="M9.9 14.6s-3.4-2.1-3.4-4.2a1.7 1.7 0 0 1 3.4-.6 1.7 1.7 0 0 1 3.4.6c0 2.1-3.4 4.2-3.4 4.2z" fill="#ff5e5b"/></svg>
-    <span class="grow">Support me on Ko-fi</span></button>`;
+  ${navBtn(ui.view === 'settings', P.settings, 'Settings', '', 'data-act="nav" data-view="settings"')}`;
 }
 
 /* ---------- investments ---------- */
@@ -977,27 +984,8 @@ function checkTimers() {
 /* ---------- settings ---------- */
 let dataPath = '';
 function viewSettings() {
-  const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
-  const profiles = db.profiles.map((p) => {
-    const on = p.id === db.activeProfile;
-    return `<div class="calitem"><span class="dot" style="background:${on ? 'var(--accent2)' : '#3a3848'}"></span><span class="grow ell" style="font-weight:500">${esc(p.name)}${on ? ' <span class="small muted">· active</span>' : ''}</span>
-      <span class="small muted">${plural(db.flips.filter((f) => f.profileId === p.id).length, 'flip')}</span>
-      <button type="button" class="iconbtn" style="opacity:1" data-act="editProfile" data-id="${p.id}" aria-label="Edit profile ${esc(p.name)}">${ic(P.edit, 15)}</button></div>`;
-  }).join('');
-  const cats = db.categories.map((c) => {
-    const m = catMeta(c.id);
-    return `<div class="calitem"><span class="ico" style="width:30px;height:30px;border-radius:8px;background:${m.tint};color:${m.ink}">${ic(P[m.icon], 16)}</span><span class="grow ell" style="font-weight:500">${esc(c.name)}</span>
-      <span class="small muted">${plural(db.flips.filter((f) => f.cat === c.id).length, 'flip')}</span>
-      <button type="button" class="iconbtn" style="opacity:1" data-act="editCat" data-id="${c.id}" aria-label="Edit category ${esc(c.name)}">${ic(P.edit, 15)}</button></div>`;
-  }).join('');
   return `
-  <div class="top"><div><h1>Settings</h1><p>Profiles, investment categories and your data file.</p></div></div>
-  <div class="split">
-    <section class="panel"><div style="display:flex;align-items:center"><h2 class="grow">Profiles</h2><button type="button" class="btn ghost sm" data-act="newProfile">${ic(P.plus, 16, 2)}New profile</button></div>
-      <span class="small muted">Each profile has its own flips, passive income and stats. Calendar and To Do are shared.</span>${profiles}</section>
-    <section class="panel"><div style="display:flex;align-items:center"><h2 class="grow">Categories</h2><button type="button" class="btn ghost sm" data-act="newCat">${ic(P.plus, 16, 2)}New category</button></div>
-      <span class="small muted">Shared by every profile.</span>${cats || '<span class="small muted">No categories yet. Create one to start logging flips.</span>'}</section>
-  </div>
+  <div class="top"><div><h1>Settings</h1><p>Your data file, time zone, selling fees and updates. Profiles and categories are in the sidebar.</p></div></div>
   <section class="panel"><h2>Data</h2>
     <span class="small muted">Everything is saved in one JSON file. To edit it by hand: open the folder, edit <b>data.json</b>, save it, then click Reload. Don't change anything in the app while you edit, or the app will overwrite your edits. A copy of the previous version is kept as data.json.bak.</span>
     <code style="padding:10px 12px;border-radius:10px;background:var(--field);border:1px solid var(--fieldline);user-select:text;word-break:break-all">${esc(dataPath)}</code>
@@ -1049,6 +1037,260 @@ function viewDice() {
   </div>
   ${open.length ? `<section class="panel"><h2>In progress</h2>${open.map(row).join('')}</section>` : ''}
   <section class="panel"><h2>Finished</h2>${done.map(row).join('') || '<span class="small muted">No finished dice yet. When a dice gives its 6 or its dye, click Got the drop.</span>'}</section>`;
+}
+
+/* ---------- collection: rare leather armor ---------- */
+// Original color of each leather item, from the Hypixel item list (filled by loadItems, or by a scan).
+const HYP_COLORS = {};
+const setHypColors = (items) => { for (const h of items || []) if (h?.id && /^\d+,\d+,\d+$/.test(h.color || '')) HYP_COLORS[h.id] = h.color.split(',').map((n) => (+n).toString(16).padStart(2, '0')).join('').toUpperCase(); };
+const coll = { busy: false };
+const gunzipB64 = async (b64) => new Uint8Array(await new Response(new Blob([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+// Every leather piece in the player's inventories, on all their SkyBlock profiles (needs their own Hypixel API key).
+async function apiPieces(name, key) {
+  const pl = await (await fetch('https://playerdb.co/api/player/minecraft/' + encodeURIComponent(name))).json().catch(() => null);
+  const uuid = pl?.data?.player?.raw_id;
+  if (!/^[0-9a-f]{32}$/.test(uuid || '')) throw new Error(`no Minecraft player named "${name}"`);
+  const r = await fetch('https://api.hypixel.net/v2/skyblock/profiles?uuid=' + uuid, { headers: { 'API-Key': key } });
+  const j = await r.json().catch(() => ({}));
+  if (!j.success) throw new Error(j.cause || 'HTTP ' + r.status);
+  if (!HYP_COLORS.VELVET_TOP_HAT && !Object.keys(HYP_COLORS).length) setHypColors((await (await fetch('https://api.hypixel.net/v2/resources/skyblock/items')).json()).items);
+  const out = [];
+  let open = 0;
+  for (const pr of j.profiles || []) {
+    const inv = pr.members?.[uuid]?.inventory;
+    if (!inv) continue;
+    open++;
+    const boxes = [['Inventory', inv.inv_contents], ['Armor', inv.inv_armor], ['Equipment', inv.equipment_contents], ['Ender chest', inv.ender_chest_contents], ['Wardrobe', inv.wardrobe_contents],
+      ['Personal vault', inv.personal_vault_contents], ...Object.entries(inv.backpack_contents || {}).map(([i, b]) => ['Backpack ' + (+i + 1), b])];
+    for (const [where, box] of boxes) if (box?.data) out.push(...L.leatherPieces(L.readNbt(await gunzipB64(box.data)), `${pr.cute_name || 'Profile'} · ${where}`));
+  }
+  if (!open) throw new Error('your inventory API is off. In SkyBlock: Settings → API Settings → turn on Inventory API');
+  return out;
+}
+// Pieces SeymourAnalyzer saved while you scanned chests in game (no API key needed).
+async function modPieces(path) {
+  const j = JSON.parse(await T.core.invoke('read_seymour', { path: path || null }));
+  return Object.values(j?.pieces || j || {}).filter((x) => x && x.uuid && /^[0-9A-Fa-f]{6}$/.test(x.hexcode || '')).map((x) => {
+    const name = String(x.pieceName || 'Seymour piece').replace(/§./g, '').trim(), c = x.chestLocation;
+    return { uuid: String(x.uuid), id: L.SEYMOUR_IDS.find((i) => name.toUpperCase().replace(/ /g, '_').includes(i)) || 'VELVET_TOP_HAT', name, hex: x.hexcode.toUpperCase(),
+      where: c ? `Chest ${c.x}, ${c.y}, ${c.z}` : '', mods: null };
+  });
+}
+// One source's scan replaces its pieces; pieces it no longer finds stay, marked gone. Dyed pieces and normal colors are left out.
+function mergePieces(src, found) {
+  const all = db.coll.pieces, now = new Date().toISOString(), seen = new Set();
+  for (const x of found) {
+    const kind = x.dyed ? null : L.pieceKind(x, HYP_COLORS[x.id], SEY_TARGETS);
+    if (!kind) continue;
+    seen.add(x.uuid);
+    all[x.uuid] = { ...all[x.uuid], ...x, kind, src, seen: now, gone: false };
+  }
+  for (const x of Object.values(all)) if (x.src === src && !seen.has(x.uuid)) x.gone = true;
+  return seen.size;
+}
+async function collRefresh() {
+  if (coll.busy) return;
+  const c = db.prefs.coll, notes = [];
+  coll.busy = true; db.coll.msg = 'Scanning…'; render();
+  if (T) {
+    try { notes.push(`SeymourAnalyzer: ${mergePieces('mod', await modPieces(c.file))} pieces`); } catch (e) { notes.push('SeymourAnalyzer file not read (' + (e.message || e) + ')'); }
+  }
+  if (c.name && c.key) {
+    try { notes.push(`Hypixel: ${mergePieces('api', await apiPieces(c.name, c.key))} rare pieces`); } catch (e) { notes.push('Hypixel scan failed: ' + (e.message || e)); }
+  } else notes.push('Add your username and API key to scan your inventories');
+  coll.busy = false; db.coll.at = new Date().toISOString(); db.coll.msg = notes.join(' · ');
+  commit();
+}
+const hexInfo = new Map(); // hex -> closest SeymourAnalyzer target
+const useFades = () => db.prefs.coll.fades !== false; // SeymourAnalyzer's "fade dyes" option
+const hexMatch = (hex) => { const k = hex + useFades(); if (!hexInfo.has(k)) hexInfo.set(k, L.analyzeHex(hex, SEY_TARGETS, useFades() ? SEY_FADES : {})); return hexInfo.get(k); };
+const pieceLabel = (x) => (x.kind === 'Seymour' ? 'T' + (hexMatch(x.hex)?.tier ?? 3) : x.kind);
+// Leather icon in the piece's exact color: the grey texture multiplied by the hex, like Minecraft draws it, plus its overlay.
+const leatherIcon = (x, size = 32) => { const t = L.pieceType(x.name) || 'chestplate'; return `<span class="lth" style="--c:#${x.hex};--b:url(leather/leather_${t}.png);width:${size}px;height:${size}px"><img src="leather/leather_${t}_overlay.png" alt=""></span>`; };
+const KIND_ORDER = ['OG Fairy', 'Crystal', 'Fairy', 'Spook', 'Exotic', 'Bleached', 'T0', 'T1', 'T2', 'T3'];
+function viewColl() {
+  const c = db.prefs.coll, q = ui.q.trim().toLowerCase();
+  const all = Object.values(viewPieces()).map((x) => ({ x, label: pieceLabel(x), m: hexMatch(x.hex), pat: x.kind === 'Seymour' ? L.hexPattern(x.hex) : null })); // patterns: Seymour pieces only
+  all.forEach((r) => (r.slot = L.pieceType(r.x.name) || 'chestplate'));
+  // Checked boxes: any of them inside a group, every group with a box checked must match. The search also finds pieces within T2 of a target named like it.
+  const F = ui.collSel, pool = all.filter((r) => F.gone || !r.x.gone);
+  const shown = pool.filter((r) => (!F.slot.size || F.slot.has(r.slot)) && (!F.kind.size || F.kind.has(r.label)) && (!F.pat || r.pat)).flatMap((r) => {
+    if (!q || r.x.name.toLowerCase().includes(q) || r.x.hex.toLowerCase().includes(q.replace('#', ''))) return [r];
+    const s = L.searchHex(r.x.hex, q, SEY_TARGETS, useFades() ? SEY_FADES : {});
+    return s ? [{ ...r, m: s, hit: true }] : [];
+  }).sort((a, b) => KIND_ORDER.indexOf(a.label) - KIND_ORDER.indexOf(b.label) || (a.m?.dE ?? 99) - (b.m?.dE ?? 99));
+  const nSel = F.slot.size + F.kind.size + F.pat + F.gone;
+  const box = (g, v, label, n) => `<label class="fchk"><input type="checkbox" data-act="collTog" data-g="${g}" data-v="${esc(v)}" ${(g === 'pat' || g === 'gone' ? F[g] : F[g].has(v)) ? 'checked' : ''}><span>${esc(label)}</span><small>${n}</small></label>`;
+  const nOf = (f) => pool.filter(f).length;
+  const showMade = c.made !== false, showPrice = c.price !== false;
+  const mods = (m) => pieceMods(m, showMade).map(([k, v]) => `${k}: ${v}`).join(' · ');
+  const card = ({ x, label, m, pat, hit }) => `<article class="pcard ${x.kind === 'Seymour' ? 'bg-' + tierCls(hexMatch(x.hex)) : ''} ${x.gone ? 'gonerow' : ''} ${ui.collPick.has(x.uuid) ? 'picked' : ''}" data-act="collPick" data-id="${esc(x.uuid)}">
+    <span class="ppick"><input type="checkbox" data-act="collPick" data-id="${esc(x.uuid)}" ${ui.collPick.has(x.uuid) ? 'checked' : ''} aria-label="Select ${esc(x.name)} for the sales list"></span>
+    <div class="pchead">${leatherIcon(x, 52)}
+      <span style="min-width:0;display:flex;flex-direction:column;gap:6px;align-items:flex-start">
+        <span class="ptitle"><button type="button" class="pname" data-act="collInfo" data-id="${esc(x.uuid)}" title="Details, owners and sales">${esc(x.name)}</button>
+          <span class="pill ${/^T\d$/.test(label) ? tierCls(hexMatch(x.hex)) : 'kind'}">${esc(label)}${/^T\d$/.test(label) && hexMatch(x.hex)?.fade ? ' fade' : ''}</span>${pat ? `<span class="pill" style="background:var(--chip);color:var(--nav)">${pat}</span>` : ''}${x.gone ? '<span class="pill" style="background:var(--chip);color:var(--muted)">No longer found</span>' : ''}</span>
+        <span class="hexchip"><span class="sw" style="background:#${x.hex}"></span>#${x.hex}</span></span></div>
+    ${m ? `<dl class="ana">
+      <dt>${hit ? 'Search' : 'Closest'}</dt><dd title="${esc(m.name)}"><b>${esc(m.name)}</b>${m.fade ? ' <span class="muted">(fade)</span>' : ''}</dd>
+      <dt>Target</dt><dd class="hexchip"><span class="sw" style="background:#${m.hex}"></span>#${m.hex}</dd>
+      <dt>ΔE</dt><dd><b class="de ${tierCls(m)}">${m.dE.toFixed(2)}</b> <span class="muted">· Absolute ${m.abs}</span></dd></dl>` : ''}
+    ${mods(x.mods) ? `<span class="small muted pmods" title="${esc(mods(x.mods))}">${esc(mods(x.mods))}</span>` : ''}
+    <div class="pfoot"><span class="small muted ell grow" title="${esc(pieceWhere(x))}">${esc(pieceWhere(x))}</span>
+      ${showPrice && !ui.peek ? `<button type="button" class="pricebtn ${x.price != null ? 'set' : ''}" data-act="collPrice" data-id="${esc(x.uuid)}" title="${x.price != null ? 'Edit the buy price' : 'Add a buy price'}" aria-label="Buy price of ${esc(x.name)}${x.price != null ? ': ' + fmt(x.price) : ''}">${x.price != null ? fmt(x.price) + ' ' : ''}<b>$</b></button>` : ''}
+      ${x.gone ? `<button type="button" class="iconbtn" style="opacity:1" data-act="collForget" data-id="${esc(x.uuid)}" aria-label="Forget ${esc(x.name)}">${ic(P.trash, 15)}</button>` : ''}</div>
+  </article>`;
+  const status = ui.collTab === 'pieces' && q ? `"${q}" also finds pieces within T2 of a target with that name`
+    : coll.busy ? 'Scanning…' : [db.coll.at && 'Last scan ' + shortDate(db.coll.at) + ' ' + hm(new Date(db.coll.at)), db.coll.msg || (c.key ? 'Click Refresh to scan.' : 'Open Settings to link your account, or Refresh to read SeymourAnalyzer.')].filter(Boolean).join(' · ');
+  const tabs = `<div class="seg" role="tablist" aria-label="Collection view">${[['pieces', 'Pieces', shown.length], ['sets', 'Set builder', '']].map(([k, l, n]) => `<button type="button" role="tab" aria-selected="${ui.collTab === k}" data-act="collTab" data-v="${k}">${l}${n !== '' ? `<span>${n}</span>` : ''}</button>`).join('')}</div>`;
+  return `
+  <div class="top" style="flex-wrap:nowrap"><div style="flex:1;min-width:0"><h1>Collection</h1><p>Your rare leather armor, sorted by type and tier. Dyed pieces are left out.</p>
+      <div class="cafes">${[['exotic', 'Exotic Café'], ['seymour', 'Seymour Café'], ['crystal', 'Crystal Café']].map(([k, l]) => `<button type="button" class="cafe" data-act="openLink" data-v="${k}" title="Open the ${l} Discord">${ic(P.link, 14)}${l}</button>`).join('')}</div></div>
+    <div style="display:flex;gap:8px;flex:none"><button type="button" class="btn ghost" data-act="collPeek">${ic(P.peek, 17)}Check player inventory</button>
+    <button type="button" class="btn ghost" data-act="collAccount">${ic(P.gear, 17)}Settings</button></div></div>
+  ${ui.peek ? `<div class="pickbar peekbar">${ic(P.peek, 17)}<b>${esc(ui.peek.name)}</b><span class="small">${ui.peek.busy ? 'Scanning their inventories…' : ui.peek.err ? esc(ui.peek.err) : `${Object.keys(ui.peek.pieces || {}).length} rare pieces · shown for now, not added to your collection`}</span><span class="grow"></span>
+    <button type="button" class="btn sm" data-act="collPeekEnd">Back to my collection</button></div>` : ''}
+  <div class="ctool">${tabs}
+    ${ui.collTab === 'pieces' ? `<button type="button" class="btn ghost" data-act="collOpen" aria-expanded="${ui.collOpen}" aria-controls="collfilters">${ic(P.filter, 17)}Filters${nSel ? ` <span class="pill kind">${nSel}</span>` : ''}</button>
+    ${nSel ? '<button type="button" class="link" data-act="collClear">Clear filters</button>' : ''}` : ''}
+    <span class="grow"></span><span class="small muted ell cstatus" role="status" title="${esc(status)}">${esc(status)}</span>
+    <button type="button" class="iconbtn refresh ${coll.busy ? 'spin' : ''}" data-act="collRefresh" ${coll.busy ? 'disabled' : ''} title="Refresh: scan your inventories and SeymourAnalyzer" aria-label="${coll.busy ? 'Scanning' : 'Refresh'}">${ic(P.repeat, 18, 2)}</button></div>
+  ${ui.collTab === 'pieces' && ui.collPick.size ? `<div class="pickbar"><b>${ui.collPick.size} selected</b><span class="small muted">Copied as aligned lines for a sales post</span><span class="grow"></span>
+    <button type="button" class="btn sm" data-act="collCopy">${ic(P.copy, 15)}Copy list</button><button type="button" class="btn ghost sm" data-act="collPickAll">Select all shown</button><button type="button" class="link" data-act="collPickNone">Clear</button></div>` : ''}
+  ${ui.collTab === 'sets' ? setsHtml(all.filter((r) => !r.x.gone)) : `${ui.collOpen ? `<section class="panel fpanel" id="collfilters">
+    <div><span class="flabel">Piece</span><div class="fgrid">${['helmet', 'chestplate', 'leggings', 'boots'].map((t) => box('slot', t, t[0].toUpperCase() + t.slice(1), nOf((r) => r.slot === t))).join('')}</div></div>
+    <div><span class="flabel">Type</span><div class="fgrid">${KIND_ORDER.map((k) => box('kind', k, k, nOf((r) => r.label === k))).join('')}</div></div>
+    <div><span class="flabel">Other</span><div class="fgrid">${box('pat', '1', 'Hex patterns only', nOf((r) => r.pat))}${box('gone', '1', 'Include pieces no longer found', all.filter((r) => r.x.gone).length)}
+      <label class="fchk" title="Match hexes against fade dye stages too, like SeymourAnalyzer's fade option"><input type="checkbox" data-act="collFades" ${useFades() ? 'checked' : ''}><span>Include fade dyes</span></label></div></div>
+  </section>` : ''}
+  ${shown.length ? `<div class="pgrid">${shown.map(card).join('')}</div>` : `<section class="panel"><span class="small muted">${all.length ? 'No piece matches these filters.' : 'Nothing here yet. Click Refresh.'}</span></section>`}`}`;
+}
+// SeymourAnalyzer's highlight colors: normal T0 red, T1 pink, T2 orange; fade T0 blue, T1 light blue, T2 yellow.
+const viewPieces = () => ui.peek?.pieces || db.coll.pieces; // a checked player's pieces replace yours on screen only
+const pieceWhere = (x) => x.where || (x.src === 'mod' ? 'SeymourAnalyzer' : '');
+const tierCls = (m) => (m && m.tier <= 2 ? `tc-${m.fade ? 'f' : 'n'}${m.tier}` : 'tc-3');
+// Set builder: pick a target color (categories of the community hex sheet, a piece, or a typed hex); each slot lists your closest pieces.
+function setsHtml(pool) {
+  const ref = ui.setRef, refPiece = ref?.uuid ? viewPieces()[ref.uuid] : null, hex = refPiece?.hex || ref?.hex || '';
+  const title = refPiece ? refPiece.name : ref?.name || (hex ? 'Custom hex' : '');
+  const ink = (h) => (L.hexLab(h)[0] > 60 ? '#111' : '#fff'); // readable hex text over its own color
+  const tiers = db.prefs.coll.setTiers || [0, 1, 2, 3];
+  const tierBoxes = `<div class="fgrid" role="group" aria-label="Tiers to suggest">${[0, 1, 2, 3].map((n) => `<label class="fchk"><input type="checkbox" data-act="setTier" data-v="${n}" ${tiers.includes(n) ? 'checked' : ''}><span class="tdot ${tierCls({ tier: n, fade: false })}"></span><span>T${n}</span><small>${['ΔE ≤ 1', '≤ 2', '≤ 5', '> 5'][n]}</small></label>`).join('')}</div>`;
+  const cats = `<section class="panel sbcats"><h2>Targets</h2><span class="small muted">Open a category, then pick a color.</span>
+    ${SET_CATS.map(([cat, items]) => { const open = ui.setCat === cat; return `<div class="sbcat">
+      <button type="button" class="sbcathead" data-act="setCat" data-v="${esc(cat)}" aria-expanded="${open}"><span class="grow">${esc(cat)}</span><span class="small muted">${items.length}</span>${ic(open ? P.chevUp : P.chevDown, 14, 2)}</button>
+      ${open ? `<div class="sbitems">${items.map(([n, h]) => `<button type="button" class="sbitem ${!refPiece && ref?.name === n ? 'on' : ''}" data-act="setTarget" data-n="${esc(n)}" data-h="${h}"><span class="ell grow">${esc(n)}</span><span class="sbsw" style="background:#${h};color:${ink(h)}">#${h}</span></button>`).join('')}</div>` : ''}</div>`; }).join('')}</section>`;
+  const tile = (x, d) => `<button type="button" class="stile ${x.uuid === refPiece?.uuid ? 'on' : ''}" data-act="collInfo" data-id="${esc(x.uuid)}" title="${esc(x.name)} · #${x.hex}">${leatherIcon(x, 36)}
+    <span style="min-width:0;display:flex;flex-direction:column;gap:2px;align-items:flex-start"><span class="ell" style="font-weight:600;max-width:100%">${esc(x.name)}</span>
+    <span class="hexchip"><span class="sw" style="background:#${x.hex}"></span>#${x.hex}</span>
+    <span class="small muted ell" style="max-width:100%">${esc(pieceWhere(x))}</span></span>
+    <b class="de ${tierCls({ tier: L.hexTier(d), fade: false })}" style="margin-left:auto">${d.toFixed(2)}</b></button>`;
+  const cols = ['helmet', 'chestplate', 'leggings', 'boots'].map((t) => {
+    const near = pool.filter((r) => r.slot === t).map((r) => ({ x: r.x, d: L.deltaE(hex, r.x.hex) })).filter((n) => tiers.includes(L.hexTier(n.d))).sort((a, b) => a.d - b.d).slice(0, 6);
+    return `<section class="panel scol"><h2>${t[0].toUpperCase() + t.slice(1)}</h2>${near.map((n) => tile(n.x, n.d)).join('') || `<span class="small muted">${tiers.length ? 'No piece in these tiers.' : 'Pick at least one tier.'}</span>`}</section>`;
+  }).join('');
+  return `<div class="sbwrap">${cats}<div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+    <section class="panel"><div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      ${hex ? `<span class="sbsw big" style="background:#${hex};color:${ink(hex)}">#${hex}</span><div style="display:flex;flex-direction:column;gap:2px"><b style="font-size:16px">${esc(title)}</b><span class="small muted">Your closest piece of each slot. ΔE is measured to this color.</span></div>` : '<span class="small muted">Pick a target color on the left, or type a hex.</span>'}
+      <span class="grow"></span><label class="flabel" for="sethex">Hex</label><input class="in" id="sethex" value="${hex ? '#' + hex : ''}" placeholder="#F2DF11" maxlength="7" style="width:120px;font-family:ui-monospace,Consolas,monospace"></div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap"><span class="flabel">Suggest</span>${tierBoxes}</div></section>
+    ${hex ? `<div class="scols">${cols}</div>` : ''}</div></div>`;
+}
+const LINKS = { dev: 'https://developer.hypixel.net/dashboard', exotic: 'https://discord.gg/wmrCckpaee', seymour: 'https://discord.gg/pq3pmmJwZY', crystal: 'https://discord.gg/3jYaB53vtC' };
+// What was done to a piece, only the parts it has: [label, value].
+const pieceMods = (m, made = true) => !m ? [] : [
+  m.reforge && ['Reforge', m.reforge[0].toUpperCase() + m.reforge.slice(1)], m.hpb && ['HPB', Math.min(m.hpb, 10)], m.hpb > 10 && ['FPB', m.hpb - 10], m.recomb && ['Recomb', 'Yes'],
+  m.stars && ['Stars', m.stars], m.enchants && ['Enchants', m.enchants], m.gems && ['Gems', m.gems],
+  made && m.made && ['Made', typeof m.made === 'number' ? new Date(m.made).toLocaleDateString('en', { year: 'numeric', month: 'short', day: 'numeric' }) : m.made]].filter(Boolean);
+// Details of a piece, with its Auction House history from Coflnet (sales only: trades between players are not public).
+function collInfoModal(x) {
+  if (!x) return;
+  const m = hexMatch(x.hex), uid = String(x.uuid).replace(/-/g, '').slice(-12).toLowerCase();
+  openModal(`<div>${dHead(esc(x.name), `${esc(pieceLabel(x))} · #${x.hex}`)}
+    <div class="dbody">
+      <div style="display:flex;gap:16px;align-items:center">${leatherIcon(x, 64)}
+        <dl class="ana" style="flex:1">
+          <dt>Piece</dt><dd class="hexchip"><span class="sw" style="background:#${x.hex}"></span>#${x.hex}</dd>
+          ${m ? `<dt>Closest</dt><dd title="${esc(m.name)}"><b>${esc(m.name)}</b>${m.fade ? ' <span class="muted">(fade)</span>' : ''}</dd>
+          <dt>Target</dt><dd class="hexchip"><span class="sw" style="background:#${m.hex}"></span>#${m.hex}</dd>
+          <dt>ΔE</dt><dd><b class="de ${tierCls(m)}">${m.dE.toFixed(2)}</b> <span class="muted">· Absolute ${m.abs}</span></dd>` : ''}
+        </dl></div>
+      <dl class="ana"><dt>Item ID</dt><dd style="white-space:normal;word-break:break-all;font-family:ui-monospace,Consolas,monospace">${esc(x.uuid)}</dd>
+        ${pieceMods(x.mods, db.prefs.coll.made !== false).map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}
+        ${x.price != null && db.prefs.coll.price !== false ? `<dt>Bought</dt><dd>${fmt(x.price)}</dd>` : ''}
+        <dt>Where</dt><dd>${esc(pieceWhere(x))}</dd></dl>
+      <div class="field"><span class="flabel">Owners and sales (Auction House, from Coflnet)</span><div id="ahist" class="small muted">Loading…</div></div>
+    </div>
+    <div class="dfoot"><button type="button" class="btn ghost" data-act="collSet" data-id="${esc(x.uuid)}">Find a matching set</button><span class="grow"></span><button type="button" class="btn" data-act="close">Close</button></div></div>`, 'info');
+  (async () => {
+    if (!/^[0-9a-f]{12}$/.test(uid)) return 'This piece has no item ID, so its sales cannot be looked up.';
+    const sales = await (await fetch(`https://sky.coflnet.com/api/auctions/uid/${uid}/sold`)).json();
+    if (!Array.isArray(sales) || !sales.length) return 'No Auction House sale found for this piece.';
+    sales.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+    const ids = [...new Set(sales.flatMap((s) => [s.seller, s.buyer]).filter((id) => /^[0-9a-f]{32}$/.test(id || '')))].slice(0, 12);
+    const names = Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await fetch(`https://sky.coflnet.com/api/player/${id}/name`).then((r) => (r.ok ? r.text() : ''), () => '').then((t) => t.replace(/"/g, '').trim() || id.slice(0, 8))])));
+    const who = (id) => esc(names[id] || String(id || '?').slice(0, 8));
+    return `<table class="ahist"><thead><tr><th>Date</th><th>Seller</th><th>Buyer</th><th>Price</th></tr></thead><tbody>${sales.map((s) => `<tr><td>${esc(new Date(s.timestamp + 'Z').toLocaleDateString('en', { year: 'numeric', month: 'short', day: 'numeric' }))}</td><td>${who(s.seller)}</td><td>${who(s.buyer)}</td><td><b>${fmt(s.highestBid)}</b></td></tr>`).join('')}</tbody></table>
+      <span class="small muted">Owners in order: ${[sales[0].seller, ...sales.map((s) => s.buyer)].map(who).join(' → ')}</span>`;
+  })().then((html) => { const el = $('#ahist'); if (el) el.innerHTML = html; }, (e) => { const el = $('#ahist'); if (el) el.textContent = 'Could not reach Coflnet: ' + (e.message || e); });
+}
+// Check another player's inventories with your API key: their rare pieces are shown until you go back, never saved.
+function collPeekModal() {
+  const c = db.prefs.coll;
+  if (!c.key) return collAccountModal();
+  const form = openModal(`<form novalidate>${dHead('Check player inventory', 'See the rare leather armor of any player. Nothing is added to your collection.')}
+    <div class="dbody"><label class="field"><span>Minecraft username</span><input class="in" name="name" placeholder="e.g. Technoblade" autocomplete="off" autofocus></label>
+      <span class="small muted">Uses your Hypixel API key. The player must have the Inventory API turned on.</span><span class="err" role="alert"></span></div>${dFoot('Check')}</form>`);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const name = String(new FormData(form).get('name')).trim();
+    if (!/^\w{2,16}$/.test(name)) return setErr(form, 'A Minecraft username is 2 to 16 letters, digits or _.');
+    closeModal();
+    const peek = (ui.peek = { name, busy: true, pieces: {} });
+    ui.collPick.clear(); ui.setRef = null; render();
+    try {
+      for (const x of await apiPieces(name, c.key)) {
+        const kind = x.dyed ? null : L.pieceKind(x, HYP_COLORS[x.id], SEY_TARGETS);
+        if (kind) peek.pieces[x.uuid] = { ...x, kind, src: 'api' };
+      }
+    } catch (err) { peek.err = 'Could not check: ' + (err.message || err); }
+    peek.busy = false;
+    if (ui.peek === peek) render(); // ignore a check you already left
+  };
+}
+function collPriceModal(x) {
+  const form = openModal(`<form novalidate>${dHead('Buy price', esc(x.name) + ' · #' + x.hex)}
+    <div class="dbody"><div class="field"><label class="flabel" for="cprice">What you paid</label><input class="in" id="cprice" name="price" value="${esc(toShort(x.price))}" placeholder="e.g. 25m" autofocus><span class="small muted">Shortcuts work: 25m, 1.2b, 450k. Leave empty to remove it.</span></div>
+      <span class="err" role="alert"></span></div>${dFoot('Save')}</form>`);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const v = String(new FormData(form).get('price')).trim(), n = v ? parse(v) : null;
+    if (v && n == null) return setErr(form, 'Enter a price like 25m, 1.2b or 450000.');
+    if (n == null) delete x.price; else x.price = n;
+    closeModal(); commit();
+  };
+}
+function collAccountModal() {
+  const c = db.prefs.coll;
+  const form = openModal(`<form novalidate>${dHead('Collection settings', 'Your Minecraft username and your own Hypixel API key stay on this PC.')}
+    <div class="dbody">
+      <label class="field"><span>Minecraft username</span><input class="in" name="name" value="${esc(c.name)}" placeholder="e.g. Technoblade" autocomplete="off" autofocus></label>
+      <label class="field"><span>Hypixel API key <small class="muted">· optional</small></span><input class="in" type="password" name="key" value="${esc(c.key)}" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off">
+        <span class="small muted">Create one on the <button type="button" class="link" data-act="openLink" data-v="dev">Hypixel Developer Dashboard</button> (developer.hypixel.net/dashboard: log in, then Create API Key). Development keys expire after a few days: paste the new one here. In SkyBlock, turn on Settings → API Settings → Inventory API.</span></label>
+      <label class="field"><span>SeymourAnalyzer file <small class="muted">· optional</small></span><input class="in" name="file" value="${esc(c.file)}" placeholder="%APPDATA%\\.minecraft\\config\\seymouranalyzer\\collection.json">
+        <span class="small muted">Leave empty for the default Minecraft launcher. With Prism, Modrinth or CurseForge, paste the instance's config\\seymouranalyzer folder.</span></label>
+      <div class="fgrid stack"><label class="fchk"><input type="checkbox" name="made" ${c.made !== false ? 'checked' : ''}><span>Show the date each piece was made</span></label>
+        <label class="fchk"><input type="checkbox" name="price" ${c.price !== false ? 'checked' : ''}><span>Show buy prices ($)</span></label></div>
+      <span class="err" role="alert"></span>
+    </div>${dFoot('Save')}</form>`);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const fd = new FormData(form), name = String(fd.get('name')).trim(), key = String(fd.get('key')).trim();
+    if (name && !/^\w{2,16}$/.test(name)) return setErr(form, 'A Minecraft username is 2 to 16 letters, digits or _.');
+    if (key && !/^[0-9a-f-]{36}$/i.test(key)) return setErr(form, 'An API key looks like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.');
+    Object.assign(db.prefs.coll, { name, key, file: String(fd.get('file')).trim(), made: fd.get('made') === 'on', price: fd.get('price') === 'on' });
+    closeModal(); commit();
+  };
 }
 
 function diceModal(d) {
@@ -1122,8 +1364,8 @@ function dropModal(d) {
 }
 
 /* ---------- render ---------- */
-const VIEWS = { dice: viewDice, inv: viewInv, history: viewHistory, cal: viewCal, todo: viewTodo, timers: viewTimers, stats: viewStats, settings: viewSettings };
-const PLACEHOLDER = { dice: 'Search…', inv: 'Search items or notes…', history: 'Search sold items…', cal: 'Search events…', todo: 'Search tasks…', timers: 'Search timers…', stats: 'Search…', settings: 'Search…' };
+const VIEWS = { coll: viewColl, dice: viewDice, inv: viewInv, history: viewHistory, cal: viewCal, todo: viewTodo, timers: viewTimers, stats: viewStats, settings: viewSettings };
+const PLACEHOLDER = { coll: 'Search pieces or hex…', dice: 'Search…', inv: 'Search items or notes…', history: 'Search sold items…', cal: 'Search events…', todo: 'Search tasks…', timers: 'Search timers…', stats: 'Search…', settings: 'Search…' };
 function render() {
   $('#side').innerHTML = sideHtml();
   const main = $('#view');
@@ -1224,7 +1466,7 @@ async function loadItems() {
     }));
     try { localStorage.setItem('neuItems', JSON.stringify(cache)); } catch {}
   } catch (e) { console.warn('NEU-REPO items not loaded:', e); }
-  try { for (const h of (await hypList).items || []) add(L.hypItem(h)); } catch (e) { console.warn('Hypixel item list not loaded:', e); }
+  try { const hl = await hypList; setHypColors(hl.items); for (const h of hl.items || []) add(L.hypItem(h)); } catch (e) { console.warn('Hypixel item list not loaded:', e); }
   ITEMS.sort((a, b) => (a[0].toLowerCase() < b[0].toLowerCase() ? -1 : 1));
 }
 // Face of a player-head skin (8x8 + hat layer), as the build tool draws it; cached per skin in this browser.
@@ -1813,7 +2055,7 @@ function catModal(c) {
   };
 }
 
-function profileModal(p, canDelete = true) { // deleting is only offered from Settings
+function profileModal(p, canDelete = true) {
   const isEdit = !!p;
   const form = openModal(`<form novalidate>${dHead(isEdit ? 'Edit profile' : 'New profile', 'A profile has its own flips, passive income and stats.')}
     <div class="dbody">
@@ -1864,6 +2106,31 @@ const flipOf = (b) => byId(db.flips, b.dataset.id);
 const A = {
   nav: (b) => { ui.view = b.dataset.view; if (b.dataset.cat) ui.cat = b.dataset.cat; ui.q = ''; $('#q').value = ''; ui.sel.clear(); render(); },
   tab: (b) => { ui.tab = b.dataset.v; render(); },
+  collOpen: () => { ui.collOpen = !ui.collOpen; render(); },
+  collClear: () => { ui.collSel = { slot: new Set(), kind: new Set(), pat: false, gone: false }; render(); },
+  collTog: (b) => { const F = ui.collSel, g = b.dataset.g; if (g === 'pat' || g === 'gone') F[g] = !F[g]; else F[g].has(b.dataset.v) ? F[g].delete(b.dataset.v) : F[g].add(b.dataset.v); render(); $(`[data-act=collTog][data-g="${g}"][data-v="${b.dataset.v}"]`)?.focus(); },
+  collRefresh: () => collRefresh(),
+  collAccount: () => collAccountModal(),
+  openLink: (b) => (T ? T.core.invoke('open_link', { site: b.dataset.v }).catch((e) => alert('Could not open the browser: ' + e)) : window.open(LINKS[b.dataset.v], '_blank', 'noopener')),
+  collInfo: (b) => collInfoModal(viewPieces()[b.dataset.id]),
+  collPick: (b) => { const s = ui.collPick, id = b.dataset.id; s.has(id) ? s.delete(id) : s.add(id); render(); },
+  collPickAll: () => { $$('[data-act=collPick]').forEach((x) => ui.collPick.add(x.dataset.id)); render(); },
+  collPickNone: () => { ui.collPick.clear(); render(); },
+  collCopy: (b) => {
+    const order = $$('[data-act=collPick]').map((x) => x.dataset.id), ids = [...ui.collPick].sort((a, c) => order.indexOf(a) - order.indexOf(c));
+    const rows = ids.map((id) => viewPieces()[id]).filter(Boolean).map((x) => { const m = hexMatch(x.hex); return { name: x.name, hex: x.hex, top: m?.name || '-', dE: m?.dE ?? 0, abs: m?.abs ?? 0 }; });
+    navigator.clipboard.writeText('```\n' + L.exportLines(rows) + '\n```').then(() => { b.textContent = 'Copied ✓'; }, (e) => alert('Could not copy: ' + e));
+  },
+  collTab: (b) => { ui.collTab = b.dataset.v; render(); },
+  collPeek: () => collPeekModal(),
+  collPeekEnd: () => { ui.peek = null; ui.collPick.clear(); ui.setRef = null; render(); },
+  setTier: (b) => { const n = +b.dataset.v, t = new Set(db.prefs.coll.setTiers || [0, 1, 2, 3]); t.has(n) ? t.delete(n) : t.add(n); db.prefs.coll.setTiers = [...t].sort(); commit(); },
+  collFades: () => { db.prefs.coll.fades = !useFades(); commit(); },
+  setCat: (b) => { ui.setCat = ui.setCat === b.dataset.v ? null : b.dataset.v; render(); },
+  setTarget: (b) => { ui.setRef = { hex: b.dataset.h, name: b.dataset.n }; render(); },
+  collSet: (b) => { if (b.closest('#modal')) closeModal(); ui.setRef = { uuid: b.dataset.id }; ui.collTab = 'sets'; render(); },
+  collPrice: (b) => collPriceModal(db.coll.pieces[b.dataset.id]),
+  collForget: (b) => { delete db.coll.pieces[b.dataset.id]; commit(); },
   sortBy: (b) => { const k = b.dataset.v; ui.sort = ui.sort.key === k ? { key: k, dir: -ui.sort.dir } : { key: k, dir: SORTS[k].first }; render(); },
   sel: (b) => { ui.sel.has(b.dataset.id) ? ui.sel.delete(b.dataset.id) : ui.sel.add(b.dataset.id); render(); },
   clearSel: () => { ui.sel.clear(); render(); },
@@ -1925,7 +2192,7 @@ const A = {
   newProfile: () => { ui.pOpen = false; render(); profileModal(); },
   pmenu: () => { ui.pOpen = !ui.pOpen; render(); },
   pickProfile: (b) => { ui.pOpen = false; db.activeProfile = b.dataset.id; ui.sel.clear(); commit(); },
-  renameProfile: (b) => { ui.pOpen = false; render(); profileModal(byId(db.profiles, b.dataset.id), false); },
+  renameProfile: (b) => { ui.pOpen = false; render(); profileModal(byId(db.profiles, b.dataset.id)); },
   toggleAll: () => { ui.catsOpen = !ui.catsOpen; render(); },
   editProfile: (b) => profileModal(byId(db.profiles, b.dataset.id)),
   openData: () => T.core.invoke('open_data_dir').catch((e) => alert('Could not open the folder: ' + e)),
@@ -1952,7 +2219,7 @@ document.addEventListener('click', (e) => {
     return;
   }
   // image viewer: click beside the image closes it (forms don't, to avoid losing input)
-  if (e.target.id === 'modal' && $('#modal .dialog.img')) return closeModal();
+  if (e.target.id === 'modal' && $('#modal .dialog.img, #modal .dialog.info')) return closeModal(); // read-only windows
   const b = e.target.closest('[data-act]');
   if (ui.pOpen && !e.target.closest('.pmenu')) { ui.pOpen = false; $('#side').innerHTML = sideHtml(); }
   if (b && A[b.dataset.act]) A[b.dataset.act](b, e);
@@ -2020,6 +2287,33 @@ function saveCatOrder(ids) {
   commit();
 }
 const saveCalOrder = (keys) => { db.prefs.calOrder = keys; commit(); };
+// Zoom of the whole app (50% to 200%, saved): Ctrl + mouse wheel anywhere, or the buttons in the top bar.
+let zoomSave;
+const appZoom = () => db.prefs.zoom || 1;
+function applyZoom() {
+  const v = appZoom();
+  if (T?.webview) T.webview.getCurrentWebview().setZoom(v).catch(() => {});
+  else document.documentElement.style.zoom = v; // in a plain browser
+  $('#zoomval').textContent = Math.round(v * 100) + '%';
+}
+function stepZoom(dir) {
+  const v = dir ? Math.round(Math.min(2, Math.max(0.5, appZoom() + dir * 0.1)) * 100) / 100 : 1;
+  if (v === appZoom()) return;
+  db.prefs.zoom = v;
+  applyZoom();
+  clearTimeout(zoomSave); zoomSave = setTimeout(save, 400); // save once the zooming stops
+}
+document.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  stepZoom(-Math.sign(e.deltaY || e.deltaX));
+}, { passive: false });
+$('.appzoom').addEventListener('click', (e) => { const b = e.target.closest('[data-zoom]'); if (b) stepZoom(+b.dataset.zoom); });
+document.addEventListener('change', (e) => {
+  if (e.target.id !== 'sethex') return;
+  const h = e.target.value.trim().replace(/^#/, '').toUpperCase();
+  if (/^[0-9A-F]{6}$/.test(h)) { ui.setRef = { hex: h }; render(); $('#sethex')?.focus(); } else e.target.setCustomValidity('A hex is 6 characters, like F2DF11'), e.target.reportValidity();
+});
 document.addEventListener('dragstart', (e) => {
   const grip = e.target.closest?.('.cphead .grip');
   if (!grip) return;
@@ -2159,6 +2453,7 @@ async function installUpdate() {
 load().then(async () => {
   dataPath = T ? await T.core.invoke('data_file').catch((e) => 'Unknown (' + e + ')') : 'Browser storage (no file when the app runs in a browser)';
   render();
+  applyZoom();
   checkTimers(); // timers that finished while the app was closed
   loadItems();
   if (T) { upd.version = await T.app.getVersion().catch(() => ''); checkUpdate(); }

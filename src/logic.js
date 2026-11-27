@@ -271,7 +271,107 @@
     return { name, model, skin };
   };
 
-  const api = { neuItem, hypItem, SB_EPOCH, SB_MONTHS, sbTime, sbDate, HYP_EVENTS, hypOccurrences, mayorTerm, tzOffset, zonedMs, shiftTz, eventMin, parseDhm, fmtDhm, DICE, diceResult, sellFees, splitBuy, candles, buckets, qfPct, forgeEnd, secText, UNIT_MS, SB_YEAR_ANCHOR, SB_YEAR_MIN, fmt, signed, parse, stepAt, splitMin, everyText, todoState, occurrences };
+  // ---- Leather armor colors. Color math, tiers and patterns ported from SeymourAnalyzer
+  // (GPL-3, github.com/Schnerry/SeymourAnalyzerFabric): CIE76 Delta E against target colors and fade dyes.
+  const labCache = new Map();
+  const hexLab = (hex) => {
+    let lab = labCache.get(hex);
+    if (lab) return lab;
+    const lin = (c) => (c > 0.04045 ? ((c + 0.055) / 1.055) ** 2.4 : c / 12.92);
+    const [r, g, b] = [0, 2, 4].map((i) => lin(parseInt(hex.slice(i, i + 2), 16) / 255));
+    const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    const x = f((r * 0.4124564 + g * 0.3575761 + b * 0.1804375) * 100 / 95.047), y = f((r * 0.2126729 + g * 0.7151522 + b * 0.072175) * 100 / 100), z = f((r * 0.0193339 + g * 0.119192 + b * 0.9503041) * 100 / 108.883);
+    lab = [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+    labCache.set(hex, lab);
+    return lab;
+  };
+  const deltaE = (h1, h2) => { const a = hexLab(h1), b = hexLab(h2); return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]); };
+  const hexTier = (d) => (d <= 1 ? 0 : d <= 2 ? 1 : d <= 5 ? 2 : 3);
+  const SLOT_WORDS = { helmet: ['helmet', 'helm', 'hat', 'hood', 'cap', 'crown', 'mask'], chestplate: ['chestplate', 'chest', 'tunic', 'jacket', 'shirt', 'vest', 'robe', 'coat', 'plate'],
+    leggings: ['leggings', 'pants', 'trousers', 'legs', 'shorts'], boots: ['boots', 'shoes', 'sandals', 'sneakers', 'feet'] };
+  const pieceType = (name) => { const l = String(name || '').toLowerCase(); return Object.keys(SLOT_WORDS).find((t) => SLOT_WORDS[t].some((w) => l.includes(w))) || null; };
+  // Best target for a hex: exact match first, else the closest; a fade only wins if no normal color is within 0.75.
+  // shortcut: SeymourAnalyzer's user-set priority order and custom colors are left out; add them if people ask.
+  const analyzeHex = (hex, targets, fades) => {
+    const top = (map, fade) => Object.entries(map).map(([name, t]) => ({ name, hex: t, dE: deltaE(hex, t), exact: t === hex, fade })).sort((a, b) => a.dE - b.dE).slice(0, 5);
+    const all = top(targets, false).concat(top(fades, true)).sort((a, b) => a.dE - b.dE);
+    let best = all.find((m) => m.exact) || all[0];
+    if (!best) return null;
+    if (!best.exact && best.fade) best = all.find((m) => !m.fade && hexTier(m.dE) <= 2 && m.dE <= best.dE + 0.75) || best;
+    const abs = [0, 2, 4].reduce((s, i) => s + Math.abs(parseInt(hex.slice(i, i + 2), 16) - parseInt(best.hex.slice(i, i + 2), 16)), 0); // summed RGB difference
+    return { name: best.name, hex: best.hex, dE: best.dE, abs, tier: hexTier(best.dE), fade: best.fade };
+  };
+  // Closest target or fade whose name contains q ("superior"), if the hex is within T2 of it; else null.
+  const searchHex = (hex, q, targets, fades) => {
+    let best = null;
+    for (const [map, fade] of [[targets, false], [fades, true]]) for (const [name, t] of Object.entries(map)) {
+      if (!name.toLowerCase().includes(q)) continue;
+      const dE = deltaE(hex, t);
+      if (dE <= 5 && (!best || dE < best.dE)) best = { name, hex: t, dE, fade };
+    }
+    if (!best) return null;
+    const abs = [0, 2, 4].reduce((s, i) => s + Math.abs(parseInt(hex.slice(i, i + 2), 16) - parseInt(best.hex.slice(i, i + 2), 16)), 0);
+    return { ...best, abs, tier: hexTier(best.dE) };
+  };
+  // Lines for a sales post where every column starts at the same place (needs a monospace font, like a Discord code block).
+  const exportLines = (rows) => {
+    const nw = Math.max(0, ...rows.map((r) => r.name.length)), tw = Math.max(0, ...rows.map((r) => r.top.length));
+    return rows.map((r) => `${r.name.padEnd(nw)} | #${r.hex} | Top: ${r.top.padEnd(tw)} | ΔE: ${r.dE.toFixed(2).padStart(5)} | Abs: ${r.abs}`).join('\n');
+  };
+  const hexPattern = (h) => (h[0] === h[1] && h[2] === h[3] && h[4] === h[5] ? 'paired' : h[0] === h[3] && h[1] === h[4] && h[2] === h[5] ? 'repeating'
+    : h[0] === h[5] && h[1] === h[4] && h[2] === h[3] ? 'palindrome' : h[0] === h[2] && h[2] === h[4] ? 'AxBxCx' : null);
+  const SEYMOUR_IDS = ['VELVET_TOP_HAT', 'CASHMERE_JACKET', 'SATIN_TROUSERS', 'OXFORD_SHOES'];
+  // Kind of an undyed leather piece: 'Seymour', a rare kind, or null when it wears its normal color.
+  // orig: its color from the Hypixel item list. Fairy / Crystal / Great Spook armor legitimately wears its own family's hexes.
+  const pieceKind = (p, orig, targets) => {
+    if (SEYMOUR_IDS.includes(p.id)) return 'Seymour';
+    if (!orig || p.hex === orig) return null;
+    const names = Object.keys(targets).filter((n) => targets[n] === p.hex), has = (re) => names.some((n) => re.test(n));
+    if (has(/og fairy/i)) return 'OG Fairy';
+    if (has(/^Crystal\b/)) return p.id.startsWith('CRYSTAL_') ? null : 'Crystal';
+    if (has(/^Fairy\b/)) return p.id.startsWith('FAIRY_') ? null : 'Fairy';
+    if (has(/^Great Spook\b/)) return p.id.startsWith('GREAT_SPOOK_') ? null : 'Spook';
+    if (p.hex === 'A06540') return 'Bleached'; // leather with its color removed
+    return 'Exotic';
+  };
+
+  // ---- Minecraft NBT (uncompressed bytes) -> plain object. Byte/int/long arrays are skipped.
+  const readNbt = (bytes) => {
+    const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), dec = new TextDecoder();
+    let o = 0;
+    const str = () => { const n = v.getUint16(o); o += 2; const s = dec.decode(bytes.subarray(o, o + n)); o += n; return s; };
+    const read = (t) => {
+      switch (t) {
+        case 1: return v.getInt8(o++);
+        case 2: o += 2; return v.getInt16(o - 2);
+        case 3: o += 4; return v.getInt32(o - 4);
+        case 4: o += 8; return Number(v.getBigInt64(o - 8));
+        case 5: o += 4; return v.getFloat32(o - 4);
+        case 6: o += 8; return v.getFloat64(o - 8);
+        case 7: o += read(3); return null;
+        case 8: return str();
+        case 9: { const et = v.getInt8(o++), n = read(3), a = []; for (let i = 0; i < n; i++) a.push(read(et)); return a; }
+        case 10: { const c = {}; for (let tt; (tt = v.getInt8(o++));) { const k = str(); c[k] = read(tt); } return c; }
+        case 11: o += 4 * read(3); return null;
+        case 12: o += 8 * read(3); return null;
+        default: throw new Error('Unreadable item data (NBT tag ' + t + ')');
+      }
+    };
+    const t = v.getInt8(o++);
+    str();
+    return read(t);
+  };
+  // Leather pieces of one decoded inventory ({ i: [items] }). 298-301: leather helmet .. boots, in the 1.8 item ids Hypixel sends.
+  const leatherPieces = (inv, where) => (inv?.i || []).flatMap((it) => {
+    const ea = it?.tag?.ExtraAttributes;
+    if (!ea?.uuid || !(it.id >= 298 && it.id <= 301)) return [];
+    const c = it.tag.display?.color;
+    return [{ uuid: ea.uuid, id: ea.id || '', name: String(it.tag.display?.Name || ea.id || '').replace(/§./g, '').trim(), hex: c == null ? 'A06540' : (c & 0xffffff).toString(16).toUpperCase().padStart(6, '0'),
+      dyed: !!ea.dye_item, where, mods: { hpb: ea.hot_potato_count || 0, reforge: ea.modifier || '', recomb: !!ea.rarity_upgrades, enchants: Object.keys(ea.enchantments || {}).length,
+        stars: ea.upgrade_level ?? ea.dungeon_item_level ?? 0, gems: Object.keys(ea.gems || {}).filter((k) => !k.endsWith('_gem') && k !== 'unlocked_slots').length, made: ea.timestamp ?? null } }];
+  });
+
+  const api = { neuItem, hypItem, hexLab, deltaE, hexTier, pieceType, analyzeHex, searchHex, exportLines, hexPattern, pieceKind, SEYMOUR_IDS, readNbt, leatherPieces, SB_EPOCH, SB_MONTHS, sbTime, sbDate, HYP_EVENTS, hypOccurrences, mayorTerm, tzOffset, zonedMs, shiftTz, eventMin, parseDhm, fmtDhm, DICE, diceResult, sellFees, splitBuy, candles, buckets, qfPct, forgeEnd, secText, UNIT_MS, SB_YEAR_ANCHOR, SB_YEAR_MIN, fmt, signed, parse, stepAt, splitMin, everyText, todoState, occurrences };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.L = api;
 })(this);

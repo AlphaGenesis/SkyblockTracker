@@ -189,4 +189,68 @@ assert.deepStrictEqual(L.sbDate(L.SB_EPOCH), { year: 1, month: 1, day: 1, hour: 
   assert.strictEqual(L.hypItem({ name: 'X', material: 'CARROT_ITEM', skin: { value: '%%%' } }).skin, null);
   assert.strictEqual(L.hypItem({ name: '§7' }), null); }
 
+// leather armor colors (SeymourAnalyzer port)
+{ assert.strictEqual(L.deltaE('FF0000', 'FF0000'), 0);
+  assert.ok(Math.abs(L.deltaE('FFFFFF', '000000') - 100) < 0.01); // white vs black: L* 100 vs 0
+  assert.deepStrictEqual([0.5, 1.5, 4, 9].map(L.hexTier), [0, 1, 2, 3]);
+  assert.strictEqual(L.pieceType('Velvet Top Hat'), 'helmet'); assert.strictEqual(L.pieceType('Oxford Shoes'), 'boots'); assert.strictEqual(L.pieceType('Satin Trousers'), 'leggings');
+  assert.deepStrictEqual(['AABBCC', '123123', '123321', '1A1B1C', '1A2B1C', '123456'].map(L.hexPattern), ['paired', 'repeating', 'palindrome', 'AxBxCx', null, null]);
+  const T = { 'Superior': 'F2DF11', 'Crystal - FCF3FF': 'FCF3FF', 'Fairy - FF66B2': 'FF66B2', 'Pure Pink/Og Fairy Dyed (FF00FF)': 'FF00FF', 'Great Spook - 9E00B2': '9E00B2', 'Bleached': 'A06540' };
+  const F = { 'Sludge - Stage 1': '72D159', 'Close fade': 'F2DF12' };
+  const a = L.analyzeHex('F2DF11', T, F); assert.strictEqual(a.name, 'Superior'); assert.strictEqual(a.tier, 0);
+  assert.strictEqual(L.analyzeHex('F2DF12', T, F).name, 'Close fade'); // exact fade beats a normal color
+  assert.strictEqual(L.analyzeHex('F1DE13', T, F).name, 'Superior'); // near both: the normal color wins inside 0.75
+  assert.strictEqual(L.analyzeHex('72D15A', T, F).fade, true);
+  { const TT = { 'Superior Dragon Chestplate': 'F2DF11', 'Superior Dragon Boots': 'F25D18', 'Holy Dragon': '47D147' };
+    assert.strictEqual(L.searchHex('F2DE15', 'superior', TT, {}).name, 'Superior Dragon Chestplate'); // closest superior target, T2 or better
+    assert.strictEqual(L.searchHex('47D147', 'superior', TT, {}), null); // a holy hex is far from every superior target
+    assert.strictEqual(L.searchHex('F2DF11', 'boots', TT, {}), null); } // the boots target is more than T2 away
+  assert.strictEqual(L.exportLines([{ name: 'Oxford Shoes', hex: '2AB099', top: 'Adaptive Armour', dE: 4.456, abs: 17 }, { name: 'Satin Trousers', hex: '2FAED8', top: '1.12+ Pure Light Blue', dE: 12.5, abs: 180 }]),
+    'Oxford Shoes   | #2AB099 | Top: Adaptive Armour       | ΔE:  4.46 | Abs: 17\nSatin Trousers | #2FAED8 | Top: 1.12+ Pure Light Blue | ΔE: 12.50 | Abs: 180');
+  assert.strictEqual(L.exportLines([]), '');
+  assert.strictEqual(L.analyzeHex('8830B6', { 'Pure Purple': '8932B8' }, {}).abs, 5); // 1 + 2 + 2
+  const P = (id, hex) => ({ id, hex });
+  assert.strictEqual(L.pieceKind(P('VELVET_TOP_HAT', '123456'), null, T), 'Seymour');
+  assert.strictEqual(L.pieceKind(P('SUPERIOR_DRAGON_HELMET', 'F2DF11'), 'F2DF11', T), null); // its own color
+  assert.strictEqual(L.pieceKind(P('SUPERIOR_DRAGON_HELMET', '191919'), 'F2DF11', T), 'Exotic');
+  assert.strictEqual(L.pieceKind(P('SUPERIOR_DRAGON_HELMET', 'FCF3FF'), 'F2DF11', T), 'Crystal');
+  assert.strictEqual(L.pieceKind(P('CRYSTAL_HELMET', 'FCF3FF'), 'FCF3FF', T), null);
+  assert.strictEqual(L.pieceKind(P('CRYSTAL_BOOTS', 'E5D1ED'), 'FCF3FF', { 'Crystal - E5D1ED': 'E5D1ED' }), null); // crystal armor wears every crystal hex
+  assert.strictEqual(L.pieceKind(P('FAIRY_HELMET', 'FF66B2'), 'FF3399', T), null);
+  assert.strictEqual(L.pieceKind(P('YOUNG_DRAGON_BOOTS', 'FF66B2'), 'DDE4F0', T), 'Fairy');
+  assert.strictEqual(L.pieceKind(P('YOUNG_DRAGON_BOOTS', 'FF00FF'), 'DDE4F0', T), 'OG Fairy');
+  assert.strictEqual(L.pieceKind(P('YOUNG_DRAGON_BOOTS', '9E00B2'), 'DDE4F0', T), 'Spook');
+  assert.strictEqual(L.pieceKind(P('YOUNG_DRAGON_BOOTS', 'A06540'), 'DDE4F0', T), 'Bleached');
+  assert.strictEqual(L.pieceKind(P('NOT_LEATHER', '123456'), null, T), null); }
+
+// NBT inventories as Hypixel sends them (gzipped base64; gunzipped here like the app does)
+{ const zlib = require('zlib');
+  const w = [];
+  const u8 = (n) => w.push(Buffer.from([n & 255])), u16 = (n) => { const b = Buffer.alloc(2); b.writeUInt16BE(n); w.push(b); }, i16 = (n) => { const b = Buffer.alloc(2); b.writeInt16BE(n); w.push(b); };
+  const i32 = (n) => { const b = Buffer.alloc(4); b.writeInt32BE(n); w.push(b); }, str = (s) => { const b = Buffer.from(s, 'utf8'); u16(b.length); w.push(b); }, tag = (t, name) => { u8(t); str(name); };
+  const item = (id, name, color, ea) => {
+    tag(2, 'id'); i16(id); tag(1, 'Count'); u8(1); tag(10, 'tag'); tag(10, 'display'); tag(8, 'Name'); str(name);
+    if (color != null) { tag(3, 'color'); i32(color); }
+    u8(0); tag(10, 'ExtraAttributes');
+    for (const [k, v] of Object.entries(ea)) {
+      if (typeof v === 'string') { tag(8, k); str(v); } else if (typeof v === 'number') { tag(3, k); i32(v); } else { tag(10, k); for (const [k2, v2] of Object.entries(v)) { tag(3, k2); i32(v2); } u8(0); }
+    }
+    u8(0); u8(0); u8(0);
+  };
+  tag(10, ''); tag(9, 'i'); u8(10); i32(4);
+  item(299, '§6Fierce Superior Dragon Chestplate', 0x191919, { id: 'SUPERIOR_DRAGON_CHESTPLATE', uuid: 'u1', modifier: 'fierce', hot_potato_count: 15, rarity_upgrades: 1, enchantments: { growth: 5, protection: 5 } });
+  item(301, '§5Oxford Shoes', 0x123456, { id: 'OXFORD_SHOES', uuid: 'u2', dye_item: 'DYE_PURE_BLACK' });
+  item(298, 'Leather Hat', null, { id: 'BLEACHED', uuid: 'u3' });
+  u8(0); // empty slot
+  u8(0);
+  const inv = L.readNbt(new Uint8Array(zlib.gunzipSync(zlib.gzipSync(Buffer.concat(w)))));
+  assert.strictEqual(inv.i.length, 4);
+  const ps = L.leatherPieces(inv, 'Inventory');
+  assert.strictEqual(ps.length, 3);
+  assert.deepStrictEqual(ps[0], { uuid: 'u1', id: 'SUPERIOR_DRAGON_CHESTPLATE', name: 'Fierce Superior Dragon Chestplate', hex: '191919', dyed: false, where: 'Inventory',
+    mods: { hpb: 15, reforge: 'fierce', recomb: true, enchants: 2, stars: 0, gems: 0, made: null } });
+  assert.strictEqual(ps[1].dyed, true);
+  assert.strictEqual(ps[2].hex, 'A06540');
+  assert.deepStrictEqual(L.leatherPieces(undefined, 'x'), []); }
+
 console.log('logic tests passed');
