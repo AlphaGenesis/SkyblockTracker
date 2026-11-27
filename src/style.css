@@ -327,9 +327,7 @@ form:has(#rep:checked) .rep-opts { display: flex; }
 
 
 /* collection */
-.lth { position: relative; display: inline-block; flex: none; }
-.lth::before { content: ""; position: absolute; inset: 0; background: var(--b) center / contain no-repeat, var(--c); background-blend-mode: multiply; -webkit-mask: var(--b) center / contain no-repeat; mask: var(--b) center / contain no-repeat; image-rendering: pixelated; }
-.lth img { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+.lth { display: inline-block; flex: none; }
 .hexchip { display: inline-flex; align-items: center; gap: 6px; font: 600 13px ui-monospace, Consolas, monospace; color: var(--nav); }
 .ana { flex: none; width: 100%; box-sizing: border-box; margin: 0; display: grid; grid-template-columns: 64px 1fr; gap: 4px 10px; align-items: center; padding: 10px 12px; border-radius: 10px; background: #13121b; border: 1px solid var(--cardline); font-size: 13px; }
 .ana dt { color: var(--muted); font-size: 12px; }

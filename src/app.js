@@ -1106,7 +1106,30 @@ const useFades = () => db.prefs.coll.fades !== false; // SeymourAnalyzer's "fade
 const hexMatch = (hex) => { const k = hex + useFades(); if (!hexInfo.has(k)) hexInfo.set(k, L.analyzeHex(hex, SEY_TARGETS, useFades() ? SEY_FADES : {})); return hexInfo.get(k); };
 const pieceLabel = (x) => (x.kind === 'Seymour' ? 'T' + (hexMatch(x.hex)?.tier ?? 3) : x.kind);
 // Leather icon in the piece's exact color: the grey texture multiplied by the hex, like Minecraft draws it, plus its overlay.
-const leatherIcon = (x, size = 32) => { const t = L.pieceType(x.name) || 'chestplate'; return `<span class="lth" style="--c:#${x.hex};--b:url(leather/leather_${t}.png);width:${size}px;height:${size}px"><img src="leather/leather_${t}_overlay.png" alt=""></span>`; };
+// Leather icon in the piece's exact color, drawn like Minecraft does: grey texture multiplied by the hex, then its overlay.
+// Drawn once per slot + hex on a canvas and kept as an image.
+const LEATHER = {}, tinted = new Map();
+let leatherWait = null;
+function leatherSrc(t, hex) {
+  const key = t + hex;
+  if (tinted.has(key)) return tinted.get(key);
+  const imgs = (LEATHER[t] = LEATHER[t] || ['', '_overlay'].map((v) => Object.assign(new Image(), { src: `leather/leather_${t}${v}.png` })));
+  if (!imgs.every((i) => i.complete && i.naturalWidth)) { // not loaded yet: draw again once they are
+    leatherWait = leatherWait || Promise.all(imgs.map((i) => i.decode().catch(() => {}))).then(() => { leatherWait = null; render(); });
+    return '';
+  }
+  const [base, over] = imgs, c = document.createElement('canvas'), g = c.getContext('2d');
+  c.width = base.naturalWidth; c.height = base.naturalHeight;
+  g.drawImage(base, 0, 0);
+  g.globalCompositeOperation = 'multiply'; g.fillStyle = '#' + hex; g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = 'destination-in'; g.drawImage(base, 0, 0); // keep the texture's shape
+  g.globalCompositeOperation = 'source-over'; g.drawImage(over, 0, 0);
+  let url = '';
+  try { url = c.toDataURL(); } catch {} // a page opened from disk can't read its canvas; the app always can
+  tinted.set(key, url);
+  return url;
+}
+const leatherIcon = (x, size = 32) => { const src = leatherSrc(L.pieceType(x.name) || 'chestplate', x.hex); return src ? `<img class="pix lth" src="${src}" alt="" width="${size}" height="${size}">` : `<span class="lth" style="width:${size}px;height:${size}px"></span>`; };
 const KIND_ORDER = ['OG Fairy', 'Crystal', 'Fairy', 'Spook', 'Exotic', 'Bleached', 'T0', 'T1', 'T2', 'T3'];
 function viewColl() {
   const c = db.prefs.coll, q = ui.q.trim().toLowerCase();
@@ -1369,10 +1392,11 @@ const PLACEHOLDER = { coll: 'Search pieces or hex…', dice: 'Search…', inv: '
 function render() {
   $('#side').innerHTML = sideHtml();
   const main = $('#view');
-  const st = main.scrollTop, ws = $('#wscroll')?.scrollTop, cs = $('#calside')?.scrollTop;
+  const st = main.scrollTop, ws = $('#wscroll')?.scrollTop, cs = $('#calside')?.scrollTop, sb = $('.sbcats')?.scrollTop;
   main.innerHTML = VIEWS[ui.view]();
   main.scrollTop = st;
   if (cs && $('#calside')) $('#calside').scrollTop = cs;
+  if (sb && $('.sbcats')) $('.sbcats').scrollTop = sb; // set builder targets keep their scroll
   const w = $('#wscroll');
   if (w) w.scrollTop = ws ?? Math.max(0, new Date().getHours() - 2) * ROW;
   $('#q').placeholder = PLACEHOLDER[ui.view];
